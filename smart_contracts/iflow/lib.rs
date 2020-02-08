@@ -37,8 +37,8 @@ mod iflow {
         #[ink(constructor)]
         fn new(&mut self) {
             self.start_evt.set(0);
-            self.factory.set(AccountId::from([0x0; 32]));
-            self.interpreter.set(AccountId::from([0x0; 32]));
+            self.factory.set(AccountId::default());
+            self.interpreter.set(AccountId::default());
             self.events.set(Vec::new());
         }
 
@@ -111,7 +111,7 @@ mod iflow {
             *self
                 .p_references
                 .get(&e_ind)
-                .unwrap_or(&AccountId::from([0x0; 32]))
+                .unwrap_or(&AccountId::default())
         }
 
         #[ink(message)]

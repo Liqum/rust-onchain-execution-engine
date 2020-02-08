@@ -9,9 +9,24 @@ mod idata {
     #[cfg(not(feature = "ink-as-dependency"))]
     use ink_core::storage;
     use ink_prelude::vec::Vec;
-
+    //Iflow
     const GET_INTERPRETER: [u8; 4] = [0xB2, 0x77, 0xA3, 0x80];
-    
+    //Interpreter
+    const EXECUTE_ELEMENTS: [u8; 4] = [0xB8, 0x66, 0x1E, 0xE4];
+
+    #[cfg_attr(feature = "ink-generate-abi", derive(type_metadata::Metadata))]
+    #[derive(scale::Encode, scale::Decode)]
+    pub enum Errors {
+        EnviromentError,
+        Other,
+    }
+
+    impl From<EnvError> for Errors {
+        fn from(_: EnvError) -> Self {
+            Errors::EnviromentError
+        }
+    }
+
     #[ink(storage)]
     struct Idata {
         tokens_on_edges: storage::Value<u128>,
@@ -29,8 +44,8 @@ mod idata {
         fn new(&mut self) {
             self.tokens_on_edges.set(0);
             self.started_activities.set(0);
-            self.idata_parent.set(AccountId::from([0x0; 32]));
-            self.iflow_node.set(AccountId::from([0x0; 32]));
+            self.idata_parent.set(AccountId::default());
+            self.iflow_node.set(AccountId::default());
             self.index_in_parent.set(0);
         }
 
@@ -75,8 +90,9 @@ mod idata {
         }
 
         #[ink(message)]
-        fn decrease_instance_count(&mut self, e_ind: u128) {
+        fn decrease_instance_count(&mut self, e_ind: u128) -> u128 {
             self.inst_count.mutate_with(&e_ind, |count| *count -= 1);
+            self.get_instance_count(e_ind)
         }
 
         #[ink(message)]
@@ -105,11 +121,21 @@ mod idata {
         }
 
         #[ink(message)]
-        fn continue_execution(&self, e_ind: u128) -> AccountId {
-            let selector = Selector::from(GET_INTERPRETER);
-            CallParams::<EnvTypes, AccountId>::eval(self.get_cflow_inst(), selector)
-                .fire()
-                .unwrap_or(AccountId::from([0x0; 32]))
+        fn continue_execution(&self, e_ind: u128) -> Result<(), Errors> {
+            let get_interpreter_selector = Selector::from(GET_INTERPRETER);
+            let execute_elements_selector = Selector::from(EXECUTE_ELEMENTS);
+            let interpreter = CallParams::<EnvTypes, AccountId>::eval(
+                self.get_cflow_inst(),
+                get_interpreter_selector,
+            )
+            .fire()?;
+            CallParams::<EnvTypes, Result<(), Errors>>::eval(
+                self.get_cflow_inst(),
+                execute_elements_selector,
+            )
+            .push_arg::<AccountId>(&self.env().caller())
+            .push_arg::<u128>(&e_ind)
+            .fire()?
         }
     }
 }
