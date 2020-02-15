@@ -9,9 +9,9 @@ mod idata {
     #[cfg(not(feature = "ink-as-dependency"))]
     use ink_core::storage;
     use ink_prelude::vec::Vec;
-    //Iflow
+    //iflow
     const GET_INTERPRETER: [u8; 4] = [0xB2, 0x77, 0xA3, 0x80];
-    //Interpreter
+    //interpreter
     const EXECUTE_ELEMENTS: [u8; 4] = [0xB8, 0x66, 0x1E, 0xE4];
 
     #[cfg_attr(feature = "ink-generate-abi", derive(type_metadata::Metadata))]
@@ -35,7 +35,7 @@ mod idata {
         iflow_node: storage::Value<AccountId>,
         index_in_parent: storage::Value<u128>,
         children: storage::HashMap<u128, Vec<AccountId>>,
-        inst_count: storage::HashMap<u128, u128>,
+        instance_count: storage::HashMap<u128, u128>,
     }
 
     impl Idata {
@@ -60,17 +60,18 @@ mod idata {
         }
 
         #[ink(message)]
-        fn set_parent(&mut self, parent: AccountId, c_flow: AccountId, e_ind: u128) {
-            self.index_in_parent.set(e_ind);
+        fn set_parent(&mut self, parent: AccountId, child_flow: AccountId, element_index: u128) {
+            self.index_in_parent.set(element_index);
             self.idata_parent.set(parent);
-            self.iflow_node.set(c_flow);
+            self.iflow_node.set(child_flow);
         }
 
         #[ink(message)]
-        fn add_child(&mut self, e_ind: u128, child: AccountId) {
+        fn add_child(&mut self, element_index: u128, child: AccountId) {
             self.children
-                .mutate_with(&e_ind, |children| children.push(child));
-            self.inst_count.mutate_with(&e_ind, |count| *count += 1);
+                .mutate_with(&element_index, |children| children.push(child));
+            self.instance_count
+                .mutate_with(&element_index, |count| *count += 1);
         }
 
         /// Returns the current state.
@@ -85,19 +86,20 @@ mod idata {
         }
 
         #[ink(message)]
-        fn get_instance_count(&self, e_ind: u128) -> u128 {
-            *self.inst_count.get(&e_ind).unwrap_or(&0)
+        fn get_instance_count(&self, element_index: u128) -> u128 {
+            *self.instance_count.get(&element_index).unwrap_or(&0)
         }
 
         #[ink(message)]
-        fn decrease_instance_count(&mut self, e_ind: u128) -> u128 {
-            self.inst_count.mutate_with(&e_ind, |count| *count -= 1);
-            self.get_instance_count(e_ind)
+        fn decrease_instance_count(&mut self, element_index: u128) -> u128 {
+            self.instance_count
+                .mutate_with(&element_index, |count| *count -= 1);
+            self.get_instance_count(element_index)
         }
 
         #[ink(message)]
-        fn set_instance_count(&mut self, e_ind: u128, inst_c: u128) {
-            self.inst_count.insert(e_ind, inst_c);
+        fn set_instance_count(&mut self, element_index: u128, instance_count: u128) {
+            self.instance_count.insert(element_index, instance_count);
         }
 
         #[ink(message)]
@@ -106,12 +108,15 @@ mod idata {
         }
 
         #[ink(message)]
-        fn get_child_proc_inst(&self, e_ind: u128) -> Vec<AccountId> {
-            self.children.get(&e_ind).unwrap_or(&Vec::default()).clone()
+        fn get_child_process_instance(&self, element_index: u128) -> Vec<AccountId> {
+            self.children
+                .get(&element_index)
+                .unwrap_or(&Vec::default())
+                .clone()
         }
 
         #[ink(message)]
-        fn get_cflow_inst(&self) -> AccountId {
+        fn get_child_flow_instance(&self) -> AccountId {
             *self.iflow_node
         }
 
@@ -121,20 +126,20 @@ mod idata {
         }
 
         #[ink(message)]
-        fn continue_execution(&self, e_ind: u128) -> Result<(), Errors> {
+        fn continue_execution(&self, element_index: u128) -> Result<(), Errors> {
             let get_interpreter_selector = Selector::from(GET_INTERPRETER);
             let execute_elements_selector = Selector::from(EXECUTE_ELEMENTS);
             let interpreter = CallParams::<EnvTypes, AccountId>::eval(
-                self.get_cflow_inst(),
+                self.get_child_flow_instance(),
                 get_interpreter_selector,
             )
             .fire()?;
             CallParams::<EnvTypes, Result<(), Errors>>::eval(
-                self.get_cflow_inst(),
+                self.get_child_flow_instance(),
                 execute_elements_selector,
             )
             .push_arg::<AccountId>(&self.env().caller())
-            .push_arg::<u128>(&e_ind)
+            .push_arg::<u128>(&element_index)
             .fire()?
         }
     }

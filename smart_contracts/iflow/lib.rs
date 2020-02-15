@@ -11,7 +11,7 @@ mod iflow {
 
     #[ink(storage)]
     struct Iflow {
-        start_evt: storage::Value<u128>,
+        start_event: storage::Value<u128>,
         factory: storage::Value<AccountId>,
         interpreter: storage::Value<AccountId>,
         // elemIndex => [preC, postC, type]
@@ -27,7 +27,7 @@ mod iflow {
         // Event Index => String representing the code to identify the event (for catching)
         event_code: storage::HashMap<u128, [u8; 32]>,
         // Subprocess Index => Child Subproces address
-        p_references: storage::HashMap<u128, AccountId>,
+        parent_references: storage::HashMap<u128, AccountId>,
         // Subprocess Index => number of instances
         instance_count: storage::HashMap<u128, u128>,
     }
@@ -36,47 +36,53 @@ mod iflow {
         //Default values
         #[ink(constructor)]
         fn new(&mut self) {
-            self.start_evt.set(0);
+            self.start_event.set(0);
             self.factory.set(AccountId::default());
             self.interpreter.set(AccountId::default());
             self.events.set(Vec::new());
         }
 
         #[ink(message)]
-        fn get_precond(&self, e_ind: u128) -> u128 {
-            self.cond_table.get(&e_ind).map_or(0, |cond| cond[0])
+        fn get_pre_condition(&self, element_index: u128) -> u128 {
+            self.cond_table
+                .get(&element_index)
+                .map_or(0, |cond| cond[0])
         }
 
         #[ink(message)]
-        fn get_post_cond(&self, e_ind: u128) -> u128 {
-            self.cond_table.get(&e_ind).map_or(0, |cond| cond[1])
+        fn get_post_condition(&self, element_index: u128) -> u128 {
+            self.cond_table
+                .get(&element_index)
+                .map_or(0, |cond| cond[1])
         }
 
         #[ink(message)]
-        fn get_type_info(&self, e_ind: u128) -> u128 {
-            self.cond_table.get(&e_ind).map_or(0, |cond| cond[2])
+        fn get_type_info(&self, element_index: u128) -> u128 {
+            self.cond_table
+                .get(&element_index)
+                .map_or(0, |cond| cond[2])
         }
 
         #[ink(message)]
         fn get_first_element(&self) -> u128 {
-            *self.start_evt
+            *self.start_event
         }
 
         #[ink(message)]
-        fn get_element_info(&self, e_ind: u128) -> ([u128; 3], Vec<u128>) {
+        fn get_element_info(&self, element_index: u128) -> ([u128; 3], Vec<u128>) {
             (
-                *self.cond_table.get(&e_ind).unwrap_or(&[0; 3]),
+                *self.cond_table.get(&element_index).unwrap_or(&[0; 3]),
                 self.next_elem
-                    .get(&e_ind)
+                    .get(&element_index)
                     .unwrap_or(&Vec::default())
                     .clone(),
             )
         }
 
         #[ink(message)]
-        fn get_ady_elements(&self, e_ind: u128) -> Vec<u128> {
+        fn get_ady_elements(&self, element_index: u128) -> Vec<u128> {
             self.next_elem
-                .get(&e_ind)
+                .get(&element_index)
                 .unwrap_or(&Vec::default())
                 .clone()
         }
@@ -87,13 +93,13 @@ mod iflow {
         }
 
         #[ink(message)]
-        fn get_instance_count(&self, e_ind: u128) -> u128 {
-            *self.instance_count.get(&e_ind).unwrap_or(&0)
+        fn get_instance_count(&self, element_index: u128) -> u128 {
+            *self.instance_count.get(&element_index).unwrap_or(&0)
         }
 
         #[ink(message)]
-        fn get_event_code(&self, e_ind: u128) -> [u8; 32] {
-            *self.event_code.get(&e_ind).unwrap_or(&[0; 32])
+        fn get_event_code(&self, element_index: u128) -> [u8; 32] {
+            *self.event_code.get(&element_index).unwrap_or(&[0; 32])
         }
 
         #[ink(message)]
@@ -102,60 +108,60 @@ mod iflow {
         }
 
         #[ink(message)]
-        fn get_attached_to(&self, e_ind: u128) -> u128 {
-            *self.attached_to.get(&e_ind).unwrap_or(&0)
+        fn get_attached_to(&self, element_index: u128) -> u128 {
+            *self.attached_to.get(&element_index).unwrap_or(&0)
         }
 
         #[ink(message)]
-        fn get_subproc_inst(&self, e_ind: u128) -> AccountId {
+        fn get_subprocess_instance(&self, element_index: u128) -> AccountId {
             *self
-                .p_references
-                .get(&e_ind)
+                .parent_references
+                .get(&element_index)
                 .unwrap_or(&AccountId::default())
         }
 
         #[ink(message)]
-        fn get_factory_inst(&self) -> AccountId {
+        fn get_factory_instance(&self) -> AccountId {
             *self.factory
         }
 
         #[ink(message)]
-        fn set_factory_inst(&mut self, _factory: AccountId) {
+        fn set_factory_instance(&mut self, _factory: AccountId) {
             self.factory.set(_factory)
         }
 
         #[ink(message)]
-        fn get_interpreter_inst(&self) -> AccountId {
+        fn get_interpreter_instance(&self) -> AccountId {
             *self.interpreter
         }
 
         #[ink(message)]
-        fn set_interpreter_inst(&mut self, _inerpreter: AccountId) {
+        fn set_interpreter_instance(&mut self, _inerpreter: AccountId) {
             self.interpreter.set(_inerpreter)
         }
 
         #[ink(message)]
         fn set_element(
             &mut self,
-            e_ind: u128,
-            pre_c: u128,
-            post_c: u128,
+            element_index: u128,
+            pre_condition: u128,
+            post_condition: u128,
             type_info: u128,
-            e_code: [u8; 32],
+            event_code: [u8; 32],
             _next_elem: Vec<u128>,
         ) {
-            let _type_info = self.get_type_info(e_ind);
+            let _type_info = self.get_type_info(element_index);
             match _type_info {
                 0 => {
                     if type_info & 4 == 4 {
                         //Should be fixed
-                        self.events.push(e_ind);
+                        self.events.push(element_index);
                         if type_info & 36 == 36 {
-                            self.start_evt.set(e_ind);
+                            self.start_event.set(element_index);
                         }
-                        self.event_code.insert(e_ind, e_code);
+                        self.event_code.insert(element_index, event_code);
                     } else if type_info & 33 == 33 {
-                        self.subprocesses.push(e_ind);
+                        self.subprocesses.push(element_index);
                     }
                 }
                 _ => {
@@ -165,29 +171,30 @@ mod iflow {
                     }
                 }
             }
-            self.cond_table.insert(e_ind, [pre_c, post_c, type_info]);
-            self.next_elem.insert(e_ind, _next_elem);
+            self.cond_table
+                .insert(element_index, [pre_condition, post_condition, type_info]);
+            self.next_elem.insert(element_index, _next_elem);
         }
 
         #[ink(message)]
         fn link_sub_process(
             &mut self,
-            p_ind: u128,
-            c_flow_inst: AccountId,
-            attached_evts: Vec<u128>,
+            parent_index: u128,
+            child_flow_inst: AccountId,
+            attached_events: Vec<u128>,
             count_instances: u128,
         ) {
             //BITs (0, 5) Veryfing the subprocess to link is already in the data structure
-            if self.get_type_info(p_ind) & 33 != 33 {
+            if self.get_type_info(parent_index) & 33 != 33 {
                 return;
             }
-            self.p_references.insert(p_ind, c_flow_inst);
-            for attached_evt in attached_evts.iter() {
-                if self.get_type_info(p_ind) & 4 == 4 {
-                    self.attached_to.insert(*attached_evt, p_ind);
+            self.parent_references.insert(parent_index, child_flow_inst);
+            for attached_event in attached_events.iter() {
+                if self.get_type_info(parent_index) & 4 == 4 {
+                    self.attached_to.insert(*attached_event, parent_index);
                 }
             }
-            self.instance_count.insert(p_ind, count_instances);
+            self.instance_count.insert(parent_index, count_instances);
         }
     }
 }
