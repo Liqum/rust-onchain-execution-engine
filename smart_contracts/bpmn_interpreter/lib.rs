@@ -116,7 +116,7 @@ mod bpmn_interpreter {
                     .push_arg::<u128>(&e_ind)
                     .push_arg::<AccountId>(&c_case)
                     .fire()?;
-                self.execution_required(c_flow, p_case)?;
+                self.execution_required(c_flow, c_case)?;
                 Ok(c_case)
             }
         }
@@ -164,12 +164,12 @@ mod bpmn_interpreter {
                         self.try_catch_event(p_case, ev_code, ev_info, true)?;
                     }
                 }
-                ev_info if ev_info & 2048 == 2048 => {
-                    // Terminate Event (BIT 11), only END EVENT from standard,
-                    // Terminate the execution in the current Sub-process and each children
-                    self.kill_process(p_case)?;
-                }
-                _ => {
+                ev_info => {
+                    if ev_info & 2048 == 2048 {
+                        // Terminate Event (BIT 11), only END EVENT from standard,
+                        // Terminate the execution in the current Sub-process and each children
+                        self.kill_process(p_case)?;
+                    }
                     // Continue the execution on parent
                     self.try_catch_event(p_case, ev_code, ev_info, p_state[0] | p_state[1] == 0)?;
                 }
@@ -179,7 +179,7 @@ mod bpmn_interpreter {
 
         fn try_catch_event(
             &self,
-            mut p_case: AccountId,
+            p_case: AccountId,
             ev_code: [u8; 32],
             ev_info: u128,
             is_inst_compl: bool,
@@ -197,10 +197,12 @@ mod bpmn_interpreter {
             }
             let c_flow =
                 CallParams::<EnvTypes, AccountId>::eval(catch_case, *GET_CFLOW_INST).fire()?;
+
             let mut p_state: [u128; 2] = [0; 2];
             p_state[0] = CallParams::<EnvTypes, u128>::eval(catch_case, *GET_MARKING).fire()?;
             p_state[1] =
                 CallParams::<EnvTypes, u128>::eval(catch_case, *GET_STARTED_ACTIVITIES).fire()?;
+
             let sub_proc_ind =
                 CallParams::<EnvTypes, u128>::eval(p_case, *GET_INDEX_IN_PARENT).fire()?;
             let run_inst_count = if is_inst_compl {
@@ -212,12 +214,14 @@ mod bpmn_interpreter {
                     .push_arg(&sub_proc_ind)
                     .fire()?
             };
+
             if run_inst_count == 0 {
                 // Update the corresponding sub-process, call activity as completed
                 CallParams::<EnvTypes, ()>::invoke(catch_case, *SET_ACTIVITY_MARKING)
                     .push_arg(&(p_state[1] & !(1 << 1 << sub_proc_ind)))
                     .fire()?
             }
+
             let sub_proc_info = CallParams::<EnvTypes, u128>::eval(c_flow, *GET_INSTANCE_COUNT)
                 .push_arg(&sub_proc_ind)
                 .fire()?;
@@ -370,9 +374,10 @@ mod bpmn_interpreter {
                     let attached_to = CallParams::<EnvTypes, u128>::eval(c_flow, *GET_ATTACHED_TO)
                         .push_arg::<u128>(&event)
                         .fire()?;
+
                     if catch_ev_info & 6 == 6 {
                         // Start event-sub-process (BIT 6)
-                        if catch_ev_info & 6 == 6 {
+                        if catch_ev_info & 16 == 16 {
                             // Interrupting (BIT 4 must be 1, 0 if non-interrupting)
                             // Before starting the event subprocess, the current process-instance is killed
                             self.kill_process(p_case)?;
@@ -385,6 +390,7 @@ mod bpmn_interpreter {
                         // Boundary (BIT 6) of the subproces propagating the event
                         if catch_ev_info & 16 == 16 {
                             // Interrupting (BIT 4 must be 1, 0 if non-interrupting)
+                            // The subprocess propagating the event must be interrupted
                             let child_proc_inst = CallParams::<EnvTypes, Vec<AccountId>>::eval(
                                 p_case,
                                 *GET_CHILD_PROC_INST,
@@ -458,30 +464,35 @@ mod bpmn_interpreter {
         fn execute_elements(&self, p_case: AccountId, e_ind: u128) -> Result<(), Errors> {
             let mut e_ind = e_ind;
             let c_flow = CallParams::<EnvTypes, AccountId>::eval(p_case, *GET_CFLOW_INST).fire()?;
+            
             // 0- tokensOnEdges
             // 1- startedActivities
             let mut p_state: [u128; 2] = [0; 2];
             p_state[0] = CallParams::<EnvTypes, u128>::eval(p_case, *GET_MARKING).fire()?;
             p_state[1] =
                 CallParams::<EnvTypes, u128>::eval(p_case, *GET_STARTED_ACTIVITIES).fire()?;
-            // Execution queue and pointers to the first & last element (i.e. basic circular queue implementation)
+            
+                // Execution queue and pointers to the first & last element (i.e. basic circular queue implementation)
             let mut queue: [u128; 100] = [0; 100];
             let mut i: usize = 0;
-            let mut count: usize = 1;
+            let mut count: usize = 0;
             queue[count] = e_ind;
+            count +=1;
             while i < count {
-                i += 1;
                 e_ind = queue[i];
+                i += 1;
                 let ([pre_c, post_c, type_info], next) =
                     CallParams::<EnvTypes, ([u128; 3], Vec<u128>)>::eval(
-                        p_case,
-                        *GET_STARTED_ACTIVITIES,
+                        c_flow,
+                        *GET_ELEMENT_INFO,
                     )
+                    .push_arg::<u128>(&e_ind)
                     .fire()?;
 
                 // Verifying Preconditions (i.e. Is the element enabled?)
                 match type_info {
                     type_info if type_info & 42 == 42 => {
+                        // else if (AND Join)
                         if p_state[0] & pre_c != pre_c {
                             continue;
                         }
@@ -500,12 +511,14 @@ mod bpmn_interpreter {
                         if p_state[0] & pre_c == 0 {
                             continue;
                         }
+                        // Removing tokens from input arcs
                         p_state[0] &= !pre_c;
                     }
                     _ => {
                         continue;
                     }
                 }
+
                 // Executing current element (If enabled)
                 match type_info {
                     type_info if type_info & 65 == 65 => {
@@ -514,8 +527,7 @@ mod bpmn_interpreter {
                             CallParams::<EnvTypes, u128>::eval(c_flow, *GET_INSTANCE_COUNT)
                                 .push_arg::<u128>(&e_ind)
                                 .fire()?;
-                        // Check here
-                        for _ in 1..c_inst {
+                        for _ in 0..c_inst {
                             self.create_instance(e_ind, p_case)?;
                         }
                         p_state[1] |= 1 << e_ind;
@@ -547,7 +559,10 @@ mod bpmn_interpreter {
                         // (0- Activity, 3- Task, 12- Script) ||
                         // Exclusive(XOR) Split (1- Gateway, 3- Split(0), 4- Exclusive) ||
                         // Inclusive(OR) Split (1- Gateway, 3- Split(0), 6- Inclusive)
-                        p_state[0] = CallParams::<EnvTypes, u128>::eval(p_case, *EXECUTE_SCRIPT)
+                        CallParams::<EnvTypes, u128>::eval(p_case, *EXECUTE_SCRIPT)
+                            .push_arg::<u128>(&e_ind)
+                            .fire()?;
+                        p_state[0] |= CallParams::<EnvTypes, u128>::eval(p_case, *EXECUTE_SCRIPT)
                             .push_arg::<u128>(&e_ind)
                             .fire()?;
                     }
@@ -569,7 +584,7 @@ mod bpmn_interpreter {
                             .push_arg::<u128>(&p_state[1])
                             .fire()?;
                         let event_code =
-                            CallParams::<EnvTypes, [u8; 32]>::eval(p_case, *GET_EVENT_CODE)
+                            CallParams::<EnvTypes, [u8; 32]>::eval(c_flow, *GET_EVENT_CODE)
                                 .push_arg::<u128>(&e_ind)
                                 .fire()?;
                         self.throw_event(p_case, event_code, type_info)?;
@@ -586,7 +601,7 @@ mod bpmn_interpreter {
                         p_state[1] = started_activities;
                         if type_info & 128 == 128 {
                             // If Intermediate event (BIT 7)
-                            p_state[0] |= pre_c;
+                            p_state[0] |= post_c;
                         }
                     }
                     _ => (),
@@ -599,6 +614,7 @@ mod bpmn_interpreter {
                     count = (count + 1) % 100;
                 }
             }
+
             // Updating the state (storage) after the execution of each internal element.
             CallParams::<EnvTypes, ()>::invoke(p_case, *SET_MARKING)
                 .push_arg::<u128>(&p_state[0])
