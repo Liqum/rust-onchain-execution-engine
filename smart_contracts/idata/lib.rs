@@ -10,7 +10,7 @@ mod idata {
     use ink_core::storage;
     use ink_prelude::vec::Vec;
     //iflow
-    const GET_INTERPRETER: [u8; 4] = [0xB2, 0x77, 0xA3, 0x80];
+    const GET_INTERPRETER: [u8; 4] = [0x54, 0xBC, 0xAE, 0x12];
     //interpreter
     const EXECUTE_ELEMENTS: [u8; 4] = [0xB8, 0x66, 0x1E, 0xE4];
 
