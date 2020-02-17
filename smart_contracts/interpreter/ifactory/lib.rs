@@ -5,7 +5,6 @@ use ink_lang as ink;
 #[ink::contract(version = "0.1.0")]
 mod ifactory {
     use ink_core::env::call::*;
-    use ink_core::env::EnvError;
     use ink_core::storage;
 
     const CONSTRUCTOR: [u8; 4] = [0x5E, 0xBD, 0x88, 0xD6];
@@ -46,7 +45,7 @@ mod ifactory {
         #[ink(constructor)]
         fn new(&mut self, idata_hash: Hash, data_hash: Hash) {
             self.idata_hash.set(idata_hash);
-            self.data_hash.set(idata_hash);
+            self.data_hash.set(data_hash);
         }
 
         #[ink(message)]
@@ -60,13 +59,23 @@ mod ifactory {
         }
 
         #[ink(message)]
+        fn get_idata_hash(&self) -> Hash {
+            *self.idata_hash
+        }
+
+        #[ink(message)]
+        fn get_data_hash(&self) -> Hash {
+            *self.data_hash
+        }
+
+        #[ink(message)]
         fn new_instance(&self) -> AccountId {
             let total_balance = self.env().balance();
             let selector = Selector::from(CONSTRUCTOR);
             InstantiateParams::<EnvTypes, NewIdata>::build(selector)
                 .endowment(total_balance / 5)
                 .using_code(*self.data_hash)
-                .push_arg(&*self.idata_hash)
+                .push_arg::<Hash>(&*self.idata_hash)
                 .instantiate()
                 .unwrap_or(NewIdata::default())
                 .get_instance()

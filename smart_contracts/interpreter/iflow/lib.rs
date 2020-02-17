@@ -5,7 +5,6 @@ use ink_lang as ink;
 
 #[ink::contract(version = "0.1.0")]
 mod iflow {
-    #[cfg(not(feature = "ink-as-dependency"))]
     use ink_core::storage::{self, Flush};
     use ink_prelude::vec::Vec;
 
