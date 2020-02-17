@@ -7,16 +7,17 @@ mod ifactory {
     use ink_core::env::call::*;
     use ink_core::env::EnvError;
     use ink_core::storage;
-    
+
     const CONSTRUCTOR: [u8; 4] = [0x5E, 0xBD, 0x88, 0xD6];
 
     #[ink(storage)]
     struct Ifactory {
-        idata_hash: storage::Value<Hash>
+        idata_hash: storage::Value<Hash>,
+        data_hash: storage::Value<Hash>,
     }
 
     struct NewIdata {
-        instance: AccountId
+        instance: AccountId,
     }
 
     impl NewIdata {
@@ -28,7 +29,7 @@ mod ifactory {
     impl Default for NewIdata {
         fn default() -> Self {
             Self {
-                instance: AccountId::from([0x0; 32])
+                instance: AccountId::default(),
             }
         }
     }
@@ -36,33 +37,39 @@ mod ifactory {
     impl FromAccountId<EnvTypes> for NewIdata {
         fn from_account_id(new_instance: AccountId) -> Self {
             Self {
-                instance: new_instance
+                instance: new_instance,
             }
         }
     }
 
     impl Ifactory {
-
         #[ink(constructor)]
-        fn new(&mut self, idata_code_hash: Hash) {
-            self.idata_hash.set(idata_code_hash);
+        fn new(&mut self, idata_hash: Hash, data_hash: Hash) {
+            self.idata_hash.set(idata_hash);
+            self.data_hash.set(idata_hash);
         }
 
         #[ink(message)]
-        fn change_idata_hash(&mut self, idata_new_code_hash: Hash) {
-            self.idata_hash.set(idata_new_code_hash);
+        fn change_idata_hash(&mut self, idata_new_hash: Hash) {
+            self.idata_hash.set(idata_new_hash);
         }
 
         #[ink(message)]
-        fn new_instance(&self) -> AccountId  {
+        fn change_data_hash(&mut self, data_new_hash: Hash) {
+            self.data_hash.set(data_new_hash);
+        }
+
+        #[ink(message)]
+        fn new_instance(&self) -> AccountId {
             let total_balance = self.env().balance();
             let selector = Selector::from(CONSTRUCTOR);
             InstantiateParams::<EnvTypes, NewIdata>::build(selector)
-            .endowment(total_balance / 5)
-            .using_code(*self.idata_hash)
-            .instantiate()
-            .unwrap_or(NewIdata::default())
-            .get_instance()
+                .endowment(total_balance / 5)
+                .using_code(*self.data_hash)
+                .push_arg(&*self.idata_hash)
+                .instantiate()
+                .unwrap_or(NewIdata::default())
+                .get_instance()
         }
     }
 }
