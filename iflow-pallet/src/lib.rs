@@ -10,7 +10,7 @@ pub trait Trait: system::Trait {
 	/// The overarching event type.
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
 	 /// Type of identifier for instances.
-	 type InstanceId: Parameter
+	type InstanceId: Parameter
 		+ Member
 		+ SimpleArithmetic
 		+ Codec
@@ -53,6 +53,75 @@ decl_module! {
 		// Initializing events
 		// this is needed only if you are using events in your pallet
 		fn deposit_event() = default;
+		fn set_element(
+			origin, 
+			iflow_index: T::InstanceId, 
+			element_index: u128, 
+			pre_condition: u128, 
+			post_condition: u128, 
+			type_info: u128, 
+			event_code: [u8; 32], 
+			_next_elem: Vec<u128>
+		) -> DispatchResult {
+			ensure_signed(origin)?;
+			if !<StartEvent<T>>::exists(iflow_index) {
+				<InstanceIdCount<T>>::mutate(|count| *count += T::InstanceId::one());
+			}
+			let _type_info = Self::get_type_info(iflow_index, element_index);
+			match _type_info {
+				0 => {
+					if type_info & 4 == 4 {
+						if <Events<T>>::exists(iflow_index) {
+							<Events<T>>::mutate(iflow_index, |events| events.push(element_index));
+						} else {
+							<Events<T>>::insert(iflow_index, vec![element_index])
+						}
+						if type_info & 36 == 36 {
+							<StartEvent<T>>::insert(iflow_index, element_index);
+						}
+						<EventCode<T>>::insert((iflow_index, element_index), event_code);
+					} else if type_info & 33 == 33 {
+						if <SubProcesses<T>>::exists(iflow_index) {
+							<SubProcesses<T>>::mutate(iflow_index, |subprocesses| subprocesses.push(element_index))
+						} else {
+							<SubProcesses<T>>::insert(iflow_index, vec![element_index])
+						}
+					}
+				}
+				_ => {
+					//"Should be equal!"
+					if type_info != _type_info {
+						return Ok(());
+					}
+				}
+			}
+			<CondTable<T>>::insert((iflow_index, element_index), [pre_condition, post_condition, type_info]);
+			<NextElem<T>>::insert((iflow_index, element_index), _next_elem);
+			Ok(())
+		}
+	
+		fn link_sub_process(
+			origin,
+			iflow_index: T::InstanceId,
+			parent_index: u128,
+			child_flow_inst: T::InstanceId,
+			attached_events: Vec<u128>,
+			count_instances: u128,
+		) -> DispatchResult {
+			ensure_signed(origin)?;
+			//BITs (0, 5) Veryfing the subprocess to link is already in the data structure
+			if Self::get_type_info(iflow_index, parent_index) & 33 != 33 {
+				return Ok(())
+			}
+			<ParentRefernces<T>>::insert((iflow_index, parent_index), child_flow_inst);
+			for attached_event in attached_events.iter() {
+				if Self::get_type_info(iflow_index, parent_index) & 4 == 4 {
+					<AttachedTo<T>>::insert((iflow_index, *attached_event), parent_index);
+				}
+			}
+			<InstanceCount<T>>::insert((iflow_index, parent_index), count_instances);
+			Ok(())
+		}
 	}
 }
 
@@ -73,62 +142,6 @@ impl<T: Trait> Module<T> {
 	fn set_factory_instance(iflow_id: T::InstanceId, factory_id: T::InstanceId) {
 		<Factory<T>>::insert(iflow_id, factory_id);
 		Self::deposit_event(RawEvent::FactorySet(iflow_id, factory_id))
-	}
-
-	fn set_element(iflow_index: T::InstanceId, element_index: u128, pre_condition: u128, post_condition: u128, type_info: u128, event_code: [u8; 32], _next_elem: Vec<u128>) {
-		if !<StartEvent<T>>::exists(iflow_index) {
-			<InstanceIdCount<T>>::mutate(|count| *count += T::InstanceId::one());
-		}
-		let _type_info = Self::get_type_info(iflow_index, element_index);
-		match _type_info {
-			0 => {
-				if type_info & 4 == 4 {
-					if <Events<T>>::exists(iflow_index) {
-						<Events<T>>::mutate(iflow_index, |events| events.push(element_index));
-					} else {
-						<Events<T>>::insert(iflow_index, vec![element_index])
-					}
-					if type_info & 36 == 36 {
-						<StartEvent<T>>::insert(iflow_index, element_index);
-					}
-					<EventCode<T>>::insert((iflow_index, element_index), event_code);
-				} else if type_info & 33 == 33 {
-					if <SubProcesses<T>>::exists(iflow_index) {
-						<SubProcesses<T>>::mutate(iflow_index, |subprocesses| subprocesses.push(element_index))
-					} else {
-						<SubProcesses<T>>::insert(iflow_index, vec![element_index])
-					}
-				}
-			}
-			_ => {
-				//"Should be equal!"
-				if type_info != _type_info {
-					return;
-				}
-			}
-		}
-		<CondTable<T>>::insert((iflow_index, element_index), [pre_condition, post_condition, type_info]);
-		<NextElem<T>>::insert((iflow_index, element_index), _next_elem);
-	}
-
-	fn link_sub_process(
-		iflow_index: T::InstanceId,
-		parent_index: u128,
-		child_flow_inst: T::InstanceId,
-		attached_events: Vec<u128>,
-		count_instances: u128,
-	) {
-		//BITs (0, 5) Veryfing the subprocess to link is already in the data structure
-		if Self::get_type_info(iflow_index, parent_index) & 33 != 33 {
-			return;
-		}
-		<ParentRefernces<T>>::insert((iflow_index, parent_index), child_flow_inst);
-		for attached_event in attached_events.iter() {
-			if Self::get_type_info(iflow_index, parent_index) & 4 == 4 {
-				<AttachedTo<T>>::insert((iflow_index, *attached_event), parent_index);
-			}
-		}
-		<InstanceCount<T>>::insert((iflow_index, parent_index), count_instances);
 	}
 }
 
