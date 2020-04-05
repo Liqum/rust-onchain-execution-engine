@@ -1,112 +1,336 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use frame_support::{decl_module, decl_storage, decl_event, dispatch::DispatchResult};
+use codec::{Codec, Decode, Encode};
+use frame_support::{
+    decl_event, decl_module, decl_storage, dispatch::DispatchResult, ensure, Parameter,
+};
+use sp_runtime::traits::{MaybeSerialize, Member, SimpleArithmetic};
+use sp_std::collections::btree_map::BTreeMap;
 use system::ensure_signed;
 
-/// The pallet's configuration trait.
-pub trait Trait: system::Trait {
-	/// The overarching event type.
-	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
+mod errors;
+use errors::*;
+
+#[cfg_attr(feature = "std", derive(Debug))]
+#[derive(Encode, Decode, Default, Clone, PartialEq)]
+pub struct Iflow<T: Trait> {
+    start_evt: u128,
+    /// elemIndex => [preC, postC, type]
+    cond_table: BTreeMap<u128, [u128; 3]>,
+    /// Element Index => List of elements that can be enabled with the completion of the key element
+    next_elem: BTreeMap<u128, Vec<u128>>,
+    /// List of Indexes of the subprocesses
+    subprocesses: Vec<u128>,
+    /// List of Event Indexes defined in the current Subprocess
+    events: Vec<u128>,
+    /// Event Index => Index of the element where event is attachedTo
+    attached_to: BTreeMap<u128, u128>,
+
+    event_code: BTreeMap<u128, [u8; 32]>,
+    parent_references: BTreeMap<u128, T::InstanceId>,
+    instance_count: BTreeMap<u128, u128>,
 }
 
-// This pallet's storage items.
-decl_storage! {
-	trait Store for Module<T: Trait> as TemplateModule {
-		Something get(fn something): Option<u32>;
+impl<T: Trait> Iflow<T> {
+    fn get_pre_condition(&self, element_index: u128) -> u128 {
+        if let Some(cond_table) = self.cond_table.get(&element_index) {
+            cond_table[0]
+        } else {
+            0
+        }
+    }
+
+    fn get_post_condition(&self, element_index: u128) -> u128 {
+        if let Some(cond_table) = self.cond_table.get(&element_index) {
+            cond_table[1]
+        } else {
+            0
+        }
+    }
+
+    fn get_type_info(&self, element_index: u128) -> u128 {
+        if let Some(cond_table) = self.cond_table.get(&element_index) {
+            cond_table[2]
+        } else {
+            0
+        }
+	}
+	
+	fn get_first_elem(&self) -> u128 {
+		self.start_evt
+	}
+
+	fn get_ady_elements(&self, element_index: u128) -> &[u128] {
+		&self.next_elem[&element_index]
+	}
+
+    fn set_element(
+        &mut self,
+        element_index: u128,
+        pre_condition: u128,
+        post_condition: u128,
+        type_info: u128,
+        event_code: [u8; 32],
+        _next_elem: Vec<u128>,
+    ) {
+        if type_info & 4 == 4 {
+            self.events.push(element_index);
+            if type_info & 36 == 36 {
+                self.start_evt = element_index;
+            }
+            self.event_code.insert(element_index, event_code);
+        } else if type_info & 33 == 33 {
+            self.subprocesses.push(element_index);
+        }
+        self.cond_table.insert(element_index,  [pre_condition, post_condition, type_info]);
+        self.next_elem.insert(element_index,   _next_elem);
+    }
+
+    fn link_sub_process(
+		&mut self,
+		parent_index: u128,
+		child_flow_inst: T::InstanceId,
+		attached_events: Vec<u128>,
+		count_instances: u128,
+	) {
+       self.parent_references.insert(parent_index, child_flow_inst);
+        for attached_event in attached_events.into_iter() {
+        	if self.get_type_info(parent_index) & 4 == 4 {
+        		self.attached_to.insert(attached_event, parent_index);
+        	}
+        }
+       self.instance_count.insert(parent_index, count_instances);
+    }
+}
+
+#[cfg_attr(feature = "std", derive(Debug))]
+#[derive(Encode, Decode, Default, Clone, PartialEq)]
+pub struct Idata<T: Trait>  {
+	tokens_on_edges: u128,
+	started_activities: u128,
+	idata_parent: T::InstanceId,
+	iflow_node: T::InstanceId,
+	index_in_parent: u128,
+	children: BTreeMap<u128, Vec<T::InstanceId>>,
+	instance_count: BTreeMap<u128, u128>
+}
+
+impl <T: Trait> Idata<T> {
+	fn set_marking(&mut self, n_marking: u128) {
+		self.tokens_on_edges = n_marking
+	}
+
+	fn set_activity_marking(&mut self, n_marking: u128) {
+		self.started_activities = n_marking
+	}
+
+	fn set_parent(&mut self, idata_parent: T::InstanceId, index_in_parent: u128) {
+		self.idata_parent = idata_parent;
+		self.index_in_parent = index_in_parent
+	}
+
+	fn add_child(&mut self, element_index: u128, child_id: T::InstanceId) {
+		if let Some(children) = self.children.get_mut(&element_index) {
+			children.push(child_id);
+		} else {
+			self.children.insert(element_index, vec![child_id]);
+		}
+		self.increment_instance_count(element_index)
+	}
+
+	fn increment_instance_count(&mut self, element_index: u128) {
+		if let Some(instance_count) = self.instance_count.get_mut(&element_index) {
+			*instance_count += 1;
+		} else {
+			self.instance_count.insert(element_index, 1);
+		}
+	}
+
+	fn decrement_instance_count(&mut self, element_index: u128) {
+		if let Some(instance_count) = self.instance_count.get_mut(&element_index) {
+			instance_count.checked_sub(1);
+		}
+	}
+
+	fn set_instance_count(&mut self, element_index: u128, new_instance_count: u128) {
+		if let Some(instance_count) = self.instance_count.get_mut(&element_index) {
+			*instance_count = new_instance_count;
+		} else {
+			self.instance_count.insert(element_index, new_instance_count);
+		}
+	}
+
+	fn get_index_in_parent(&self) -> u128 {
+		self.index_in_parent
+	}
+
+	fn get_child_process_instances(&self, element_index: u128) -> &[T::InstanceId] {
+		&self.children[&element_index]
+	}
+
+	fn get_flow_node(&self) -> T::InstanceId {
+		self.iflow_node
+	}
+
+	fn get_idata_parent(&self) -> T::InstanceId {
+		self.idata_parent
+	}
+
+	fn continue_execution(&self, element_index: u128) {
+		// Call bpmn interpreter execution on given index
 	}
 }
 
-// The pallet's dispatchable functions.
-decl_module! {
-	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-		// Initializing events
-		// this is needed only if you are using events in your pallet
-		fn deposit_event() = default;
+#[cfg_attr(feature = "std", derive(Debug))]
+#[derive(Encode, Decode, Default, Clone, PartialEq)]
+pub struct Ifactory<T: Trait> {
+    /// Data & scripts hash
+    data_hash: T::Hash,
+}
 
-		pub fn do_something(origin, something: u32) -> DispatchResult {
-			// TODO: You only need this if you want to check it was signed.
-			let who = ensure_signed(origin)?;
-
-			Something::put(something);
-
-			Self::deposit_event(RawEvent::SomethingStored(something, who));
-			Ok(())
+impl <T: Trait> Ifactory <T> {
+	fn new(data_hash: T::Hash) -> Self {
+		Self {
+			data_hash
 		}
 	}
 }
 
-decl_event!(
-	pub enum Event<T> where AccountId = <T as system::Trait>::AccountId {
-		// Just a dummy event.
-		// Event `Something` is declared with a parameter of the type `u32` and `AccountId`
-		// To emit this event, we call the deposit funtion, from our runtime funtions
-		SomethingStored(u32, AccountId),
-	}
-);
+/// The pallet's configuration trait.
+pub trait Trait: system::Trait + Default {
+    /// The overarching event type.
+    type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
 
-/// tests for this pallet
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	use sp_core::H256;
-	use frame_support::{impl_outer_origin, assert_ok, parameter_types, weights::Weight};
-	use sp_runtime::{
-		traits::{BlakeTwo256, IdentityLookup}, testing::Header, Perbill,
-	};
-
-	impl_outer_origin! {
-		pub enum Origin for Test {}
-	}
-
-	// For testing the pallet, we construct most of a mock runtime. This means
-	// first constructing a configuration type (`Test`) which `impl`s each of the
-	// configuration traits of modules we want to use.
-	#[derive(Clone, Eq, PartialEq)]
-	pub struct Test;
-	parameter_types! {
-		pub const BlockHashCount: u64 = 250;
-		pub const MaximumBlockWeight: Weight = 1024;
-		pub const MaximumBlockLength: u32 = 2 * 1024;
-		pub const AvailableBlockRatio: Perbill = Perbill::from_percent(75);
-	}
-	impl system::Trait for Test {
-		type Origin = Origin;
-		type Call = ();
-		type Index = u64;
-		type BlockNumber = u64;
-		type Hash = H256;
-		type Hashing = BlakeTwo256;
-		type AccountId = u64;
-		type Lookup = IdentityLookup<Self::AccountId>;
-		type Header = Header;
-		type Event = ();
-		type BlockHashCount = BlockHashCount;
-		type MaximumBlockWeight = MaximumBlockWeight;
-		type MaximumBlockLength = MaximumBlockLength;
-		type AvailableBlockRatio = AvailableBlockRatio;
-		type Version = ();
-		type ModuleToIndex = ();
-	}
-	impl Trait for Test {
-		type Event = ();
-	}
-	type TemplateModule = Module<Test>;
-
-	// This function basically just builds a genesis storage key/value store according to
-	// our desired mockup.
-	fn new_test_ext() -> sp_io::TestExternalities {
-		system::GenesisConfig::default().build_storage::<Test>().unwrap().into()
-	}
-
-	#[test]
-	fn it_works_for_default_value() {
-		new_test_ext().execute_with(|| {
-			// Just a dummy test for the dummy funtion `do_something`
-			// calling the `do_something` function with a value 42
-			assert_ok!(TemplateModule::do_something(Origin::signed(1), 42));
-			// asserting that the stored value is equal to what we stored
-			assert_eq!(TemplateModule::something(), Some(42));
-		});
-	}
+    /// Type of identifier for instances.
+    type InstanceId: Parameter
+        + Member
+        + SimpleArithmetic
+        + Codec
+        + Default
+        + Copy
+        + MaybeSerialize
+        + PartialEq;
 }
+
+// This pallet's storage items.
+decl_storage! {
+    trait Store for Module<T: Trait> as TemplateModule {
+		IflowById get(fn iflow_by_id): map T::InstanceId => Iflow<T>;
+		
+		IfactoryById get(fn ifactory_by_id): map T::InstanceId => Ifactory<T>;
+
+		IdataById get(fn idata_by_id): map T::InstanceId => Idata<T>;
+
+        InstanceIdCount get(fn instance_id_count): T::InstanceId;
+    }
+}
+
+// The pallet's dispatchable functions.
+decl_module! {
+    pub struct Module<T: Trait> for enum Call where origin: T::Origin {
+        // Initializing events
+        // this is needed only if you are using events in your pallet
+        fn deposit_event() = default;
+
+        fn set_element(
+            origin,
+            iflow_index: T::InstanceId,
+            element_index: u128,
+            pre_condition: u128,
+            post_condition: u128,
+            type_info: u128,
+            event_code: [u8; 32],
+            _next_elem: Vec<u128>
+        ) -> DispatchResult {
+            ensure_signed(origin)?;
+            let iflow = Self::ensure_instance_exists(iflow_index)?;
+
+            let _type_info = iflow.get_type_info(element_index);
+            if  _type_info != 0 {
+                ensure!(_type_info == type_info, "Should be equal");
+            }
+
+            //
+            // == MUTATION SAFE ==
+            //
+
+			<IflowById<T>>::mutate(iflow_index, |inner_iflow| 
+			inner_iflow.set_element(
+                element_index,
+                pre_condition,
+                post_condition,
+                type_info,
+                event_code,
+				_next_elem)
+			);
+            Ok(())
+        }
+
+        fn link_sub_process(
+            origin,
+            iflow_index: T::InstanceId,
+            parent_index: u128,
+            child_flow_inst: T::InstanceId,
+            attached_events: Vec<u128>,
+            count_instances: u128,
+        ) -> DispatchResult {
+            ensure_signed(origin)?;
+
+            let iflow = Self::ensure_instance_exists(iflow_index)?;
+            Self::ensure_subprocess_to_link_in_data_structure(&iflow, parent_index)?;
+
+            //
+            // == MUTATION SAFE ==
+            //
+
+			<IflowById<T>>::mutate(iflow_index, |inner_iflow| 
+			inner_iflow.link_sub_process(
+                parent_index,
+				child_flow_inst,
+				attached_events,
+				count_instances,
+			));
+            Ok(())
+		}
+		
+		fn set_factory_instance(origin, data_hash: T::Hash, instance_id: T::InstanceId) -> DispatchResult {
+			ensure_signed(origin)?;
+			let factory = Ifactory::new(data_hash);
+			<IfactoryById<T>>::insert(instance_id, factory);
+			Self::deposit_event(RawEvent::FactorySet(instance_id, data_hash));
+			Ok(())
+    	}
+    }
+}
+
+impl<T: Trait> Module<T> {
+    fn ensure_instance_exists(instance_id: T::InstanceId) -> Result<Iflow<T>, &'static str> {
+        if <IflowById<T>>::exists(instance_id) {
+            Ok(Self::iflow_by_id(instance_id))
+        } else {
+            Err(INSTANCE_ID_NOT_FOUND)
+        }
+    }
+
+    fn ensure_subprocess_to_link_in_data_structure(
+        iflow: &Iflow<T>,
+        parent_index: u128,
+    ) -> DispatchResult {
+        //BITs (0, 5) Veryfing the subprocess to link is already in the data structure
+        ensure!(
+            iflow.get_type_info(parent_index) & 33 != 33,
+            SUBPROCESS_TO_LINK_NOT_FOUND
+        );
+        Ok(())
+    }
+}
+
+decl_event!(
+    pub enum Event<T>
+    where
+		InstanceId = <T as Trait>::InstanceId,
+		Hash = <T as system::Trait>::Hash,
+    {
+        FactorySet(InstanceId, Hash),
+    }
+);
