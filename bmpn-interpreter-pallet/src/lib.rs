@@ -29,6 +29,7 @@ pub struct Iflow<T: Trait> {
     event_code: BTreeMap<u128, [u8; 32]>,
     parent_references: BTreeMap<u128, T::InstanceId>,
     instance_count: BTreeMap<u128, u128>,
+    factory:  Ifactory<T>
 }
 
 impl<T: Trait> Iflow<T> {
@@ -62,7 +63,35 @@ impl<T: Trait> Iflow<T> {
 
 	fn get_ady_elements(&self, element_index: u128) -> &[u128] {
 		&self.next_elem[&element_index]
-	}
+    }
+    
+    fn get_sub_process_instance(&self, element_index: u128) -> T::InstanceId {
+        self.parent_references[&element_index]
+    }
+
+    fn get_sub_process_list(&self) -> &[u128] {
+        &self.subprocesses
+    }
+
+    fn get_event_code(&self, element_index: u128) -> [u8; 32] {
+        self.event_code[&element_index]
+    }
+    
+    fn get_event_list(&self) -> &[u128] {
+        &self.events
+    }
+
+    fn get_instance_count(&self, element_index: u128) -> u128 {
+        self.instance_count[&element_index]
+    }
+
+    fn get_factory_instance(&self) -> &Ifactory<T> {
+        &self.factory
+    }
+
+    fn set_factory_instance(&mut self, factory: Ifactory<T>) {
+        self.factory = factory;
+    }
 
     fn set_element(
         &mut self,
@@ -108,7 +137,7 @@ impl<T: Trait> Iflow<T> {
 pub struct Idata<T: Trait>  {
 	tokens_on_edges: u128,
 	started_activities: u128,
-	idata_parent: T::InstanceId,
+	idata_parent: Option<T::InstanceId>,
 	iflow_node: T::InstanceId,
 	index_in_parent: u128,
 	children: BTreeMap<u128, Vec<T::InstanceId>>,
@@ -124,9 +153,10 @@ impl <T: Trait> Idata<T> {
 		self.started_activities = n_marking
 	}
 
-	fn set_parent(&mut self, idata_parent: T::InstanceId, index_in_parent: u128) {
+	fn set_parent(&mut self, idata_parent: Option<T::InstanceId>, iflow_node: T::InstanceId, index_in_parent: u128) {
+        self.index_in_parent = index_in_parent;
 		self.idata_parent = idata_parent;
-		self.index_in_parent = index_in_parent
+        self.iflow_node = iflow_node;
 	}
 
 	fn add_child(&mut self, element_index: u128, child_id: T::InstanceId) {
@@ -172,7 +202,7 @@ impl <T: Trait> Idata<T> {
 		self.iflow_node
 	}
 
-	fn get_idata_parent(&self) -> T::InstanceId {
+	fn get_idata_parent(&self) -> Option<T::InstanceId> {
 		self.idata_parent
 	}
 
@@ -193,7 +223,12 @@ impl <T: Trait> Ifactory <T> {
 		Self {
 			data_hash
 		}
-	}
+    }
+    
+    fn new_instance(&self) -> T::AccountId {
+        // Initialize new instance of data & scripts contract
+        T::AccountId::default()
+    }
 }
 
 /// The pallet's configuration trait.
@@ -217,8 +252,6 @@ decl_storage! {
     trait Store for Module<T: Trait> as TemplateModule {
 		IflowById get(fn iflow_by_id): map T::InstanceId => Iflow<T>;
 		
-		IfactoryById get(fn ifactory_by_id): map T::InstanceId => Ifactory<T>;
-
 		IdataById get(fn idata_by_id): map T::InstanceId => Idata<T>;
 
         InstanceIdCount get(fn instance_id_count): T::InstanceId;
@@ -243,7 +276,7 @@ decl_module! {
             _next_elem: Vec<u128>
         ) -> DispatchResult {
             ensure_signed(origin)?;
-            let iflow = Self::ensure_instance_exists(iflow_index)?;
+            let iflow = Self::ensure_iflow_instance_exists(iflow_index)?;
 
             let _type_info = iflow.get_type_info(element_index);
             if  _type_info != 0 {
@@ -276,7 +309,7 @@ decl_module! {
         ) -> DispatchResult {
             ensure_signed(origin)?;
 
-            let iflow = Self::ensure_instance_exists(iflow_index)?;
+            let iflow = Self::ensure_iflow_instance_exists(iflow_index)?;
             Self::ensure_subprocess_to_link_in_data_structure(&iflow, parent_index)?;
 
             //
@@ -293,10 +326,10 @@ decl_module! {
             Ok(())
 		}
 		
-		fn set_factory_instance(origin, data_hash: T::Hash, instance_id: T::InstanceId) -> DispatchResult {
+		fn set_factory_instance(origin, instance_id: T::InstanceId, data_hash: T::Hash) -> DispatchResult {
 			ensure_signed(origin)?;
 			let factory = Ifactory::new(data_hash);
-			<IfactoryById<T>>::insert(instance_id, factory);
+			<IflowById<T>>::mutate(instance_id, |iflow| iflow.set_factory_instance(factory));
 			Self::deposit_event(RawEvent::FactorySet(instance_id, data_hash));
 			Ok(())
     	}
@@ -304,9 +337,70 @@ decl_module! {
 }
 
 impl<T: Trait> Module<T> {
-    fn ensure_instance_exists(instance_id: T::InstanceId) -> Result<Iflow<T>, &'static str> {
+    /// BPMN Interpreter logic
+    
+    /// Instantiation of Root-Process
+    pub fn create_root_instance(parent_case: T::InstanceId) -> DispatchResult {
+        let iflow = Self::ensure_iflow_instance_exists(parent_case)?;
+        
+        let ifactory = iflow.get_factory_instance();
+
+        ifactory.new_instance();
+
+        let mut idata = Idata::default();
+
+        idata.set_parent(None, parent_case, 0);
+
+        <IdataById<T>>::insert(parent_case, idata);
+
+        Self::deposit_event(RawEvent::NewCaseCreated(parent_case));
+
+        Self::execution_required(parent_case);
+
+        Ok(())
+    }
+
+    /// Instantiation of a sub-process by its parent
+    pub fn create_instance(element_index: u128, parent_case: T::InstanceId) -> DispatchResult {
+
+        ensure!(parent_case != T::InstanceId::default(), "Parent case should not be root");
+
+        let idata = Self::ensure_idata_instance_exists(parent_case)?;
+
+        let parent_flow_id = idata.get_flow_node();
+        let parent_flow = Self::ensure_iflow_instance_exists(parent_flow_id)?;
+
+        let child_flow_id = parent_flow.get_sub_process_instance(element_index);
+        let child_flow = Self::ensure_iflow_instance_exists(child_flow_id)?;
+        
+        let ifactory = child_flow.get_factory_instance();
+
+        ifactory.new_instance();
+
+        <IdataById<T>>::mutate(child_flow_id, |inner_data| inner_data.set_parent(Some(parent_case), child_flow_id, element_index));
+        <IdataById<T>>::mutate(parent_case, |inner_data| inner_data.add_child(element_index, child_flow_id));
+
+        Self::execution_required(child_flow_id);
+
+        Ok(())
+    }
+
+    fn execution_required(parent_case: T::InstanceId) -> DispatchResult {
+
+        Ok(())
+    }
+
+    fn ensure_iflow_instance_exists(instance_id: T::InstanceId) -> Result<Iflow<T>, &'static str> {
         if <IflowById<T>>::exists(instance_id) {
             Ok(Self::iflow_by_id(instance_id))
+        } else {
+            Err(INSTANCE_ID_NOT_FOUND)
+        }
+    }
+
+    fn ensure_idata_instance_exists(instance_id: T::InstanceId) -> Result<Idata<T>, &'static str> {
+        if <IdataById<T>>::exists(instance_id) {
+            Ok(Self::idata_by_id(instance_id))
         } else {
             Err(INSTANCE_ID_NOT_FOUND)
         }
@@ -329,8 +423,8 @@ decl_event!(
     pub enum Event<T>
     where
 		InstanceId = <T as Trait>::InstanceId,
-		Hash = <T as system::Trait>::Hash,
-    {
+		Hash = <T as system::Trait>::Hash {
         FactorySet(InstanceId, Hash),
+        NewCaseCreated(InstanceId),
     }
 );
