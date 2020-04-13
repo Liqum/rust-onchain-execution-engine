@@ -55,7 +55,11 @@ impl<T: Trait> Iflow<T> {
         } else {
             0
         }
-	}
+    }
+    
+    fn get_element_info(&self, element_index: u128) -> ([u128; 3],  &[u128]) {
+        (self.cond_table[&element_index], &self.next_elem[&element_index])
+    }
 	
 	fn get_first_elem(&self) -> u128 {
 		self.start_evt
@@ -204,9 +208,25 @@ impl <T: Trait> Idata<T> {
 
 	fn get_idata_parent(&self) -> Option<T::InstanceId> {
 		self.idata_parent
-	}
+    }
+    
+    fn get_started_activities(&self) -> u128 {
+        self.started_activities
+    }
+
+    fn get_marking(&self) -> u128 {
+        self.tokens_on_edges
+    }
+
+    fn get_instance_count(&self, element_index: u128) -> u128 {
+        self.instance_count[&element_index]
+    }
 
 	fn continue_execution(&self, element_index: u128) {
+		// Call bpmn interpreter execution on given index
+    }
+    
+    fn execute_script(&self, element_index: u128) {
 		// Call bpmn interpreter execution on given index
 	}
 }
@@ -355,13 +375,13 @@ impl<T: Trait> Module<T> {
 
         Self::deposit_event(RawEvent::NewCaseCreated(parent_case));
 
-        Self::execution_required(parent_case);
+        Self::execution_required(parent_case, &iflow);
 
         Ok(())
     }
 
     /// Instantiation of a sub-process by its parent
-    pub fn create_instance(element_index: u128, parent_case: T::InstanceId) -> DispatchResult {
+    pub fn create_instance(element_index: u128, parent_case: T::InstanceId) -> Result<T::InstanceId, &'static str> {
 
         ensure!(parent_case != T::InstanceId::default(), "Parent case should not be root");
 
@@ -380,15 +400,159 @@ impl<T: Trait> Module<T> {
         <IdataById<T>>::mutate(child_flow_id, |inner_data| inner_data.set_parent(Some(parent_case), child_flow_id, element_index));
         <IdataById<T>>::mutate(parent_case, |inner_data| inner_data.add_child(element_index, child_flow_id));
 
-        Self::execution_required(child_flow_id);
+        Self::execution_required(child_flow_id, &child_flow)?;
 
+        Ok(T::InstanceId::default())
+    }
+
+    fn execution_required(child_flow_id: T::InstanceId, child_flow: &Iflow<T>) -> Result<(), &'static str> {
+        let idata = Self::ensure_idata_instance_exists(child_flow_id)?;
+        let first_elem = child_flow.get_first_elem();
+        <IdataById<T>>::mutate(child_flow_id, |idata| {
+            let post_condition = child_flow.get_post_condition(first_elem);
+            idata.set_marking(post_condition);
+        });
+        let next = child_flow.get_ady_elements(first_elem);
+        if next.len() != 0 {
+            Self::execute_elements(child_flow_id, &idata, next[0])?;
+        }
         Ok(())
     }
 
-    fn execution_required(parent_case: T::InstanceId) -> DispatchResult {
+    fn execute_elements(parent_case: T::InstanceId, idata: &Idata<T>, mut element_index: u128) -> Result<(), &'static str> {
+        let child_flow_index = idata.get_flow_node();
+        let child_flow = Self::ensure_iflow_instance_exists(child_flow_index)?;
+        // 0- tokensOnEdges
+        // 1- startedActivities
+        let mut parent_state: [u128; 2] = [0; 2];
+        parent_state[0] = idata.get_marking();
+        parent_state[1] = idata.get_started_activities();
 
-        Ok(())
-    }
+            // Execution queue and pointers to the first & last element (i.e. basic circular queue implementation)
+            let mut queue: [u128; 100] = [0; 100];
+            let mut i: usize = 0;
+            let mut count: usize = 0;
+            queue[count] = element_index;
+            count += 1;
+            while i < count {
+                element_index = queue[i];
+                i += 1;
+                let ([pre_condition, post_condition, type_info], next) = child_flow.get_element_info(element_index);
+
+                // Verifying Preconditions (i.e. Is the element enabled?)
+                match type_info {
+                    type_info if type_info & 42 == 42 => {
+                        // else if (AND Join)
+                        if parent_state[0] & pre_condition != pre_condition {
+                            continue;
+                        }
+                        parent_state[0] &= !pre_condition;
+                    }
+                    type_info if type_info & 74 == 74 => {
+                        // else if (OR Join)
+                        ///// OR Join Implementation //////
+                    }
+                    type_info
+                        if (type_info & 1 == 1
+                            || (type_info & 4 == 4 && type_info & 640 != 0)
+                            || type_info & 2 == 2) =>
+                    {
+                        // If (Activity || Intermediate/End Event || Gateway != AND/OR Join)
+                        if parent_state[0] & pre_condition == 0 {
+                            continue;
+                        }
+                        // Removing tokens from input arcs
+                        parent_state[0] &= !pre_condition;
+                    }
+                    _ => {
+                        continue;
+                    }
+                }
+
+                // Executing current element (If enabled)
+                match type_info {
+                    type_info if type_info & 65 == 65 => {
+                        // (0- Activity, 6- Parallel Multi-Instance)
+                        let child_instances = child_flow.get_instance_count(element_index);
+                        for _ in 0..child_instances {
+                            Self::create_instance(element_index, parent_case)?;
+                        }
+                        parent_state[1] |= 1 << element_index;
+                    }
+                    type_info
+                        if (type_info & 129 == 129
+                            || (type_info & 1 == 1
+                                && type_info & 48 != 0
+                                && type_info & 4096 == 0)) =>
+                    {
+                        // If (0- Activity, 7- Sequential Multi-Instance) ||
+                        // Sub-process(0- Activity, 5- Sub-process) or Call-Activity(0- Activity, 4- Call-Activity)
+                        // but NOT Event Sub-process(12- Event Subprocess)
+                        let instance = Self::create_instance(element_index, parent_case)?;
+                        <IdataById<T>>::mutate(instance, |idata| {
+                            let instance_count = child_flow.get_instance_count(element_index);
+                            idata.set_instance_count(element_index, instance_count);
+                        });
+
+                        parent_state[1] |= 1 << element_index;
+                    }
+                    type_info
+                        if (type_info & 4105 == 4105
+                            || (type_info & 10 == 2 && type_info & 80 != 0)) =>
+                    {
+                        // (0- Activity, 3- Task, 12- Script) ||
+                        // Exclusive(XOR) Split (1- Gateway, 3- Split(0), 4- Exclusive) ||
+                        // Inclusive(OR) Split (1- Gateway, 3- Split(0), 6- Inclusive)
+                        //parent_state[0] |= idata.execute_script(element_index);
+                    }
+                    type_info
+                        if ((type_info & 9 == 9 && type_info & 27657 != 0)
+                            || type_info & 2 == 2) =>
+                    {
+                        // If (User(11), Service(13), Receive(14) or Default(10) Task || Gateways(1) not XOR/OR Split)
+                        // The execution of User/Service/Receive is triggered off-chain,
+                        // Thus the starting point would be the data contract which executes any script/data-update related to the task.
+                        parent_state[0] |= post_condition;
+                    }
+                    type_info if type_info & 12 == 12 => {
+                        // If (2- Event, 3- Throw(1))
+                        <IdataById<T>>::mutate(parent_case, |idata| {
+                            idata.set_marking(parent_state[0]);
+                            idata.set_activity_marking(parent_state[1]);
+                        });
+                        let event_code = child_flow.get_event_code(element_index);
+                        //Self::throw_event(parent_case, event_code, type_info)?;
+                        let marking = idata.get_marking();
+                        let started_activities = idata.get_started_activities();
+                        if marking | started_activities == 0 {
+                            // By throwing the event, a kill was performed so the current instance was terminated
+                            return Ok(());
+                        }
+                        parent_state[0] = marking;
+                        parent_state[1] = started_activities;
+                        if type_info & 128 == 128 {
+                            // If Intermediate event (BIT 7)
+                            parent_state[0] |= post_condition;
+                        }
+                    }
+                    _ => (),
+                }
+
+                // Adding the possible candidates to be executed to the queue.
+                // The enablement of the element is checked at the moment it gets out of the queue.
+                for next_elem in next {
+                    queue[count] = *next_elem;
+                    count = (count + 1) % 100;
+                }
+            }
+
+            // Updating the state (storage) after the execution of each internal element.
+            <IdataById<T>>::mutate(parent_case, |idata| {
+                idata.set_marking(parent_state[0]);
+                idata.set_activity_marking(parent_state[1]);
+            });
+            Ok(())
+        }
 
     fn ensure_iflow_instance_exists(instance_id: T::InstanceId) -> Result<Iflow<T>, &'static str> {
         if <IflowById<T>>::exists(instance_id) {
