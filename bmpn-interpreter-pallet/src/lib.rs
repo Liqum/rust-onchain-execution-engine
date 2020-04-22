@@ -68,7 +68,11 @@ impl<T: Trait> Iflow<T> {
 	fn get_ady_elements(&self, element_index: u128) -> &[u128] {
 		&self.next_elem[&element_index]
     }
-    
+
+    fn get_attached_to(&self, element_index: u128) -> u128 {
+        self.attached_to[&element_index]
+    }
+
     fn get_sub_process_instance(&self, element_index: u128) -> T::InstanceId {
         self.parent_references[&element_index]
     }
@@ -418,6 +422,160 @@ impl<T: Trait> Module<T> {
         }
         Ok(())
     }
+
+    fn throw_event(parent_case: T::InstanceId, idata: &Idata<T>, event_code: [u8; 32], event_info: u128) -> Result<(), &'static str>{
+
+        /// This function only receive THROW EVENTS (throw event verification made in function executeElement)
+        let mut parent_state: [u128; 2] = [0; 2];
+        parent_state[0] = idata.get_marking();
+        parent_state[0] = idata.get_started_activities();
+        match event_info {
+            event_info if event_info & 4096 == 4096 => {
+                // Message (BIT 15), to publish a Message in the Ethereum Event Log
+                //self.env().emit_event(MessageSent { event_code });
+            }
+            event_info if event_info & 5632 == 5632 => {
+                    // 9- End, 10- Default, 12- Message
+                    // If there are not tokens to consume nor started activities in any subprocess
+                if parent_state[0] | parent_state[1] == 0 {
+                    // Sub-process ended, thus continue execution on parent
+                    Self::try_catch_event(parent_case, idata, event_code, event_info, true)?;
+                }
+            }
+            event_info => {
+                if event_info & 2048 == 2048 {
+                    // Terminate Event (BIT 11), only END EVENT from standard,
+                    // Terminate the execution in the current Sub-process and each children
+                    //Self::kill_process(parent_case);
+                }
+                Self::try_catch_event(
+                    parent_case,
+                    idata,
+                    event_code,
+                    event_info,
+                    parent_state[0] | parent_state[1] == 0,
+                )?;
+            }
+        }
+        Ok(())
+    }
+     
+    fn try_catch_event(
+        mut parent_case: T::InstanceId, 
+        idata: &Idata<T>, 
+        event_code: [u8; 32], 
+        event_info: u128, 
+        instance_completed: bool
+    ) -> Result<(), &'static str> {
+        if let Some(catch_case) = idata.get_idata_parent() {
+            let mut catch_case_data = Self::ensure_idata_instance_exists(catch_case)?;
+            let child_flow = idata.get_flow_node();
+            let child_flow_instance = Self::ensure_iflow_instance_exists(child_flow)?;
+            let mut parent_state: [u128; 2] = [0; 2];
+            parent_state[0] = catch_case_data.get_marking();
+            parent_state[1] = catch_case_data.get_started_activities();
+            let sub_process_index = idata.get_index_in_parent();
+            let run_inst_count = if instance_completed {
+                <IdataById<T>>::mutate(catch_case, |catch_case_data| catch_case_data.decrement_instance_count(sub_process_index));
+                catch_case_data.get_instance_count(sub_process_index) - 1
+            } else {
+                catch_case_data.get_instance_count(sub_process_index)
+            };
+            if run_inst_count == 0 {
+
+                // Update the corresponding sub-process, call activity as completed
+                <IdataById<T>>::mutate(catch_case, |catch_case| catch_case.set_activity_marking(parent_state[1] & !(1 << 1 << sub_process_index)));
+            }
+            let sub_process_info = child_flow_instance.get_instance_count(sub_process_index);
+            if event_info & 7168 != 0 {
+
+                // If receiving 10- Default, 11- Terminate or 12- Message
+                if run_inst_count == 0 && sub_process_info & 4096 != 4096 {
+
+                    // No Instances of the sub-process propagating the event and The sub-process isn't an event-sub-process (BIT 12)
+                    let post_condition = child_flow_instance.get_post_condition(sub_process_index);
+                    <IdataById<T>>::mutate(catch_case, |catch_case| catch_case.set_marking(parent_state[0] & !post_condition));
+                    let first_ady_element = child_flow_instance.get_ady_elements(sub_process_info)[0];
+                    Self::execute_elements(catch_case, &catch_case_data, first_ady_element);
+                } else if sub_process_info & 128 == 128 {
+
+                    // Multi-Instance Sequential (BIT 7), with pending instances to be started.
+                    Self::create_instance(sub_process_index, parent_case)?;
+                } 
+            } else {
+
+                // Signal, Error or Escalation
+                // Signals are only handled from the Root-Process by Broadcast, thus the propagation must reach the Root-Process.
+                if event_info & 32768 == 32768 {
+
+                    // Propagating the Signal to the Root-Process
+                    while let Some(parent_case) = catch_case_data.get_idata_parent() {
+                        catch_case_data = Self::ensure_idata_instance_exists(parent_case)?;
+                    }
+                    // Self::broadcast_signal(parent_case);
+                    return Ok(());
+                }
+                let events = child_flow_instance.get_event_list();
+
+                // The event can be catched only once, unless it is a signal where a broadcast must happen.
+                // Precondition: Event-subprocess must appear before boundary events on the event list.
+                for event in events {
+                    let ev_code = child_flow_instance.get_event_code(*event);
+                    if event_code == ev_code {
+
+                        // Verifiying there is a match with the throw-cath events.
+                        let catch_event_info = child_flow_instance.get_type_info(*event);
+                        let attached_to = child_flow_instance.get_attached_to(*event);
+
+                        if catch_event_info & 6 == 6 {
+
+                            // Start event-sub-process (BIT 6)
+                            if catch_event_info & 16 == 16 {
+
+                            // Interrupting (BIT 4 must be 1, 0 if non-interrupting)
+                            // Before starting the event subprocess, the parent is killed
+                            //Self::kill_process(catch_case)?;
+                            }
+
+                            // Starting event sub-process
+                            Self::create_instance(attached_to, parent_case)?;
+
+                            // Marking the event-sub-process as started
+                            <IdataById<T>>::mutate(catch_case, |catch_case| catch_case.set_activity_marking((parent_state[1] | (1 << attached_to))));
+                            return Ok(())
+                        } else if catch_event_info & 256 == 256 && attached_to == sub_process_index {
+
+                            // Boundary (BIT 6) of the subproces propagating the event
+                            if catch_event_info & 16 == 16 {
+
+                                // Interrupting (BIT 4 must be 1, 0 if non-interrupting)
+                                //Self::kill_process(parent_case)?;
+                            }
+
+                            // The subprocess propagating the event must be interrupted
+                            let post_condition = child_flow_instance.get_post_condition(*event);
+                            let first_ady_element = child_flow_instance.get_ady_elements(*event)[0];
+
+                            // Update the marking with the output of the boundary event
+                            <IdataById<T>>::mutate(catch_case, |catch_case| catch_case.set_marking((parent_state[0] & !post_condition)));
+                            Self::execute_elements(catch_case, &catch_case_data, first_ady_element)?;
+                            return Ok(());
+                        }
+                    }
+                }
+                // If the event was not caught the propagation continues to the parent unless it's the root process
+                Self::throw_event(catch_case, &catch_case_data, event_code, event_info)?;
+            }
+        } else {
+            // No Parent exist, root node
+            if event_info & 8192 == 8192 {
+                // Error event (BIT 13), only END EVENT from standard, in the root process.
+                //Self::kill_process(parent_case)?;
+            }
+        }
+        Ok(())
+    }
+
 
     fn execute_elements(parent_case: T::InstanceId, idata: &Idata<T>, mut element_index: u128) -> Result<(), &'static str> {
         let child_flow_index = idata.get_flow_node();
