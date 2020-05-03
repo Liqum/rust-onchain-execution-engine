@@ -195,7 +195,7 @@ impl<T: Trait> Idata<T> {
 
     fn decrement_instance_count(&mut self, element_index: u128) {
         if let Some(instance_count) = self.instance_count.get_mut(&element_index) {
-            instance_count.checked_sub(1);
+            let _ = instance_count.checked_sub(1);
         }
     }
 
@@ -240,8 +240,9 @@ impl<T: Trait> Idata<T> {
         // Call bpmn interpreter execution on given index
     }
 
-    fn execute_script(&self, element_index: u128) {
+    fn execute_script(&self, element_index: u128) -> u128 {
         // Call bpmn interpreter execution on given index
+        0
     }
 }
 
@@ -387,7 +388,7 @@ impl<T: Trait> Module<T> {
 
         Self::deposit_event(RawEvent::NewCaseCreated(parent_case));
 
-        Self::execution_required(parent_case, &iflow);
+        Self::execution_required(parent_case, &iflow)?;
 
         Ok(())
     }
@@ -485,7 +486,7 @@ impl<T: Trait> Module<T> {
     }
 
     fn try_catch_event(
-        mut parent_case: T::InstanceId,
+        parent_case: T::InstanceId,
         idata: &Idata<T>,
         event_code: [u8; 32],
         event_info: u128,
@@ -525,7 +526,7 @@ impl<T: Trait> Module<T> {
                     });
                     let first_ady_element =
                         child_flow_instance.get_ady_elements(sub_process_info)[0];
-                    Self::execute_elements(catch_case, &catch_case_data, first_ady_element);
+                    Self::execute_elements(catch_case, &catch_case_data, first_ady_element)?;
                 } else if sub_process_info & 128 == 128 {
                     // Multi-Instance Sequential (BIT 7), with pending instances to be started.
                     Self::create_instance(sub_process_index, parent_case)?;
@@ -538,7 +539,7 @@ impl<T: Trait> Module<T> {
                     while let Some(parent_case) = catch_case_data.get_idata_parent() {
                         catch_case_data = Self::ensure_idata_instance_exists(parent_case)?;
                     }
-                    // Self::broadcast_signal(parent_case);
+                    Self::broadcast_signal(parent_case)?;
                     return Ok(());
                 }
                 let events = child_flow_instance.get_event_list();
@@ -558,7 +559,7 @@ impl<T: Trait> Module<T> {
 
                                 // Interrupting (BIT 4 must be 1, 0 if non-interrupting)
                                 // Before starting the event subprocess, the parent is killed
-                                //Self::kill_process(catch_case)?;
+                                Self::kill_process(catch_case)?;
                             }
 
                             // Starting event sub-process
@@ -567,7 +568,7 @@ impl<T: Trait> Module<T> {
                             // Marking the event-sub-process as started
                             <IdataById<T>>::mutate(catch_case, |catch_case| {
                                 catch_case
-                                    .set_activity_marking((parent_state[1] | (1 << attached_to)))
+                                    .set_activity_marking(parent_state[1] | (1 << attached_to))
                             });
                             return Ok(());
                         } else if catch_event_info & 256 == 256 && attached_to == sub_process_index
@@ -576,7 +577,7 @@ impl<T: Trait> Module<T> {
                             if catch_event_info & 16 == 16 {
 
                                 // Interrupting (BIT 4 must be 1, 0 if non-interrupting)
-                                //Self::kill_process(parent_case)?;
+                                Self::kill_process(parent_case)?;
                             }
 
                             // The subprocess propagating the event must be interrupted
@@ -585,7 +586,7 @@ impl<T: Trait> Module<T> {
 
                             // Update the marking with the output of the boundary event
                             <IdataById<T>>::mutate(catch_case, |catch_case| {
-                                catch_case.set_marking((parent_state[0] & !post_condition))
+                                catch_case.set_marking(parent_state[0] & !post_condition)
                             });
                             Self::execute_elements(
                                 catch_case,
@@ -692,6 +693,10 @@ impl<T: Trait> Module<T> {
                         let pre_condition = child_flow_instance.get_pre_condition(event);
                         let first_ady_element = child_flow_instance.get_ady_elements(event)[0];
 
+                        <IdataById<T>>::mutate(parent_case, |parent_case_data| {
+                            parent_case_data.set_marking(marking & !pre_condition | post_condition);
+                        });
+
                         // Continue the execution of possible internal elements
                         Self::execute_elements(
                             parent_case,
@@ -707,7 +712,7 @@ impl<T: Trait> Module<T> {
                 if started_activities & (1 << child) != 0 {
                     let child_proc_instances =
                         parent_case_instance.get_child_process_instances(child);
-                    Self::broadcast_signals(child_proc_instances);
+                    Self::broadcast_signals(child_proc_instances)?;
                 }
             }
         }
@@ -810,7 +815,7 @@ impl<T: Trait> Module<T> {
                     // (0- Activity, 3- Task, 12- Script) ||
                     // Exclusive(XOR) Split (1- Gateway, 3- Split(0), 4- Exclusive) ||
                     // Inclusive(OR) Split (1- Gateway, 3- Split(0), 6- Inclusive)
-                    //parent_state[0] |= idata.execute_script(element_index);
+                    parent_state[0] |= idata.execute_script(element_index);
                 }
                 type_info
                     if ((type_info & 9 == 9 && type_info & 27657 != 0) || type_info & 2 == 2) =>
@@ -827,7 +832,7 @@ impl<T: Trait> Module<T> {
                         idata.set_activity_marking(parent_state[1]);
                     });
                     let event_code = child_flow.get_event_code(element_index);
-                    //Self::throw_event(parent_case, event_code, type_info)?;
+                    Self::throw_event(parent_case, idata, event_code, type_info)?;
                     let marking = idata.get_marking();
                     let started_activities = idata.get_started_activities();
                     if marking | started_activities == 0 {
