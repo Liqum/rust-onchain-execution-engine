@@ -236,13 +236,9 @@ impl<T: Trait> Idata<T> {
         self.instance_count[&element_index]
     }
 
-    fn continue_execution(&self, element_index: u128) {
+    fn continue_execution(&self, element_index: u128) -> Result<(), &'static str> {
         // Call bpmn interpreter execution on given index
-    }
-
-    fn execute_script(&self, element_index: u128) -> u128 {
-        // Call bpmn interpreter execution on given index
-        0
+        Module::<T>::execute_elements(self.get_flow_node(), element_index)
     }
 }
 
@@ -362,8 +358,25 @@ decl_module! {
         fn set_factory_instance(origin, instance_id: T::InstanceId, data_hash: T::Hash) -> DispatchResult {
             ensure_signed(origin)?;
             let factory = Ifactory::new(data_hash);
+
+            //
+            // == MUTATION SAFE ==
+            //
+
             <IflowById<T>>::mutate(instance_id, |iflow| iflow.set_factory_instance(factory));
             Self::deposit_event(RawEvent::FactorySet(instance_id, data_hash));
+            Ok(())
+        }
+
+        fn continue_execution(origin, instance_id: T::InstanceId, element_index: u128) -> DispatchResult {
+            ensure_signed(origin)?;
+            let idata = Self::ensure_idata_instance_exists(instance_id)?;
+
+            //
+            // == MUTATION SAFE ==
+            //
+
+            idata.continue_execution(element_index)?;
             Ok(())
         }
     }
@@ -376,9 +389,11 @@ impl<T: Trait> Module<T> {
     pub fn create_root_instance(parent_case: T::InstanceId) -> DispatchResult {
         let iflow = Self::ensure_iflow_instance_exists(parent_case)?;
 
-        let ifactory = iflow.get_factory_instance();
+        //
+        // == MUTATION SAFE ==
+        //
 
-        ifactory.new_instance();
+        iflow.get_factory_instance().new_instance();
 
         let mut idata = Idata::default();
 
@@ -411,6 +426,10 @@ impl<T: Trait> Module<T> {
         let child_flow_id = parent_flow.get_sub_process_instance(element_index);
         let child_flow = Self::ensure_iflow_instance_exists(child_flow_id)?;
 
+        //
+        // == MUTATION SAFE ==
+        //
+
         let ifactory = child_flow.get_factory_instance();
 
         ifactory.new_instance();
@@ -431,7 +450,8 @@ impl<T: Trait> Module<T> {
         child_flow_id: T::InstanceId,
         child_flow: &Iflow<T>,
     ) -> Result<(), &'static str> {
-        let idata = Self::ensure_idata_instance_exists(child_flow_id)?;
+        Self::ensure_idata_instance_exists(child_flow_id)?;
+
         let first_elem = child_flow.get_first_elem();
         <IdataById<T>>::mutate(child_flow_id, |idata| {
             let post_condition = child_flow.get_post_condition(first_elem);
@@ -439,7 +459,7 @@ impl<T: Trait> Module<T> {
         });
         let next = child_flow.get_ady_elements(first_elem);
         if next.len() != 0 {
-            Self::execute_elements(child_flow_id, &idata, next[0])?;
+            Self::execute_elements(child_flow_id, next[0])?;
         }
         Ok(())
     }
@@ -471,7 +491,7 @@ impl<T: Trait> Module<T> {
                 if event_info & 2048 == 2048 {
                     // Terminate Event (BIT 11), only END EVENT from standard,
                     // Terminate the execution in the current Sub-process and each children
-                    //Self::kill_process(parent_case);
+                    Self::kill_process(parent_case)?;
                 }
                 Self::try_catch_event(
                     parent_case,
@@ -526,7 +546,7 @@ impl<T: Trait> Module<T> {
                     });
                     let first_ady_element =
                         child_flow_instance.get_ady_elements(sub_process_info)[0];
-                    Self::execute_elements(catch_case, &catch_case_data, first_ady_element)?;
+                    Self::execute_elements(catch_case, first_ady_element)?;
                 } else if sub_process_info & 128 == 128 {
                     // Multi-Instance Sequential (BIT 7), with pending instances to be started.
                     Self::create_instance(sub_process_index, parent_case)?;
@@ -556,7 +576,6 @@ impl<T: Trait> Module<T> {
                         if catch_event_info & 6 == 6 {
                             // Start event-sub-process (BIT 6)
                             if catch_event_info & 16 == 16 {
-
                                 // Interrupting (BIT 4 must be 1, 0 if non-interrupting)
                                 // Before starting the event subprocess, the parent is killed
                                 Self::kill_process(catch_case)?;
@@ -575,7 +594,6 @@ impl<T: Trait> Module<T> {
                         {
                             // Boundary (BIT 6) of the subproces propagating the event
                             if catch_event_info & 16 == 16 {
-
                                 // Interrupting (BIT 4 must be 1, 0 if non-interrupting)
                                 Self::kill_process(parent_case)?;
                             }
@@ -588,11 +606,7 @@ impl<T: Trait> Module<T> {
                             <IdataById<T>>::mutate(catch_case, |catch_case| {
                                 catch_case.set_marking(parent_state[0] & !post_condition)
                             });
-                            Self::execute_elements(
-                                catch_case,
-                                &catch_case_data,
-                                first_ady_element,
-                            )?;
+                            Self::execute_elements(catch_case, first_ady_element)?;
                             return Ok(());
                         }
                     }
@@ -681,11 +695,7 @@ impl<T: Trait> Module<T> {
                         let first_ady_element = child_flow_instance.get_ady_elements(event)[0];
 
                         // Continue the execution of possible internal elements
-                        Self::execute_elements(
-                            parent_case,
-                            &parent_case_instance,
-                            first_ady_element,
-                        )?;
+                        Self::execute_elements(parent_case, first_ady_element)?;
                     } else if event_info & 160 == 160 {
                         // Start (not Event Subprocess) OR Intermediate Event
                         let marking = parent_case_instance.get_marking();
@@ -698,11 +708,7 @@ impl<T: Trait> Module<T> {
                         });
 
                         // Continue the execution of possible internal elements
-                        Self::execute_elements(
-                            parent_case,
-                            &parent_case_instance,
-                            first_ady_element,
-                        )?;
+                        Self::execute_elements(parent_case, first_ady_element)?;
                     }
                 }
             }
@@ -728,9 +734,9 @@ impl<T: Trait> Module<T> {
 
     fn execute_elements(
         parent_case: T::InstanceId,
-        idata: &Idata<T>,
         mut element_index: u128,
     ) -> Result<(), &'static str> {
+        let idata = Self::ensure_idata_instance_exists(parent_case)?;
         let child_flow_index = idata.get_flow_node();
         let child_flow = Self::ensure_iflow_instance_exists(child_flow_index)?;
         // 0- tokensOnEdges
@@ -832,7 +838,7 @@ impl<T: Trait> Module<T> {
                         idata.set_activity_marking(parent_state[1]);
                     });
                     let event_code = child_flow.get_event_code(element_index);
-                    Self::throw_event(parent_case, idata, event_code, type_info)?;
+                    Self::throw_event(parent_case, &idata, event_code, type_info)?;
                     let marking = idata.get_marking();
                     let started_activities = idata.get_started_activities();
                     if marking | started_activities == 0 {
