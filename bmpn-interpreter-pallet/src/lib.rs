@@ -261,7 +261,7 @@ impl<T: Trait> Ifactory<T> {
 }
 
 /// The pallet's configuration trait.
-pub trait Trait: system::Trait + Default {
+pub trait Trait: system::Trait + Default + contracts::Trait{
     /// The overarching event type.
     type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
 
@@ -477,7 +477,7 @@ impl<T: Trait> Module<T> {
         match event_info {
             event_info if event_info & 4096 == 4096 => {
                 // Message (BIT 15), to publish a Message in the Ethereum Event Log
-                //self.env().emit_event(MessageSent { event_code });
+                Self::deposit_event(RawEvent::MessageSent(event_code.to_vec()));
             }
             event_info if event_info & 5632 == 5632 => {
                 // 9- End, 10- Default, 12- Message
@@ -908,5 +908,6 @@ decl_event!(
     {
         FactorySet(InstanceId, Hash),
         NewCaseCreated(InstanceId),
+        MessageSent(Vec<u8>),
     }
 );

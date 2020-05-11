@@ -9,6 +9,7 @@ default = ['std']
 std = [
     'serde',
     'codec/std',
+    'contracts/std',
     'frame-support/std',
     'sp-runtime/std',
     'sp-io/std',
@@ -60,5 +61,12 @@ version = '2.0.0'
 [dev-dependencies.sp-core]
 default-features = false
 git = 'https://github.com/paritytech/substrate.git'
+rev = '3e651110aa06aa835790df63410a29676243fc54'
+version = '2.0.0'
+
+[dependencies.contracts]
+default_features = false
+git = 'https://github.com/paritytech/substrate.git'
+package = 'pallet-contracts'
 rev = '3e651110aa06aa835790df63410a29676243fc54'
 version = '2.0.0'
