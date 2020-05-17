@@ -5,11 +5,15 @@ use frame_support::{
     decl_event, decl_module, decl_storage, dispatch::DispatchResult, ensure, Parameter,
 };
 use sp_runtime::traits::{MaybeSerialize, Member, SimpleArithmetic};
-use sp_std::collections::btree_map::BTreeMap;
-use system::ensure_signed;
+use sp_std::{collections::btree_map::BTreeMap, prelude::*};
+use system::{ensure_signed, RawOrigin};
 
 mod errors;
+use contracts::{CodeHash, ContractAddressFor};
 use errors::*;
+
+const ENDOWMENT: u32 = 1000;
+const GAS: u32 = 500_000;
 
 #[cfg_attr(feature = "std", derive(Debug))]
 #[derive(Encode, Decode, Default, Clone, PartialEq)]
@@ -98,6 +102,10 @@ impl<T: Trait> Iflow<T> {
 
     fn get_factory_instance(&self) -> &Ifactory<T> {
         &self.factory
+    }
+
+    fn get_factory_instance_mut(&mut self) -> &mut Ifactory<T> {
+        &mut self.factory
     }
 
     fn set_factory_instance(&mut self, factory: Ifactory<T>) {
@@ -247,24 +255,62 @@ impl<T: Trait> Idata<T> {
 pub struct Ifactory<T: Trait> {
     /// Data & scripts hash
     data_hash: T::Hash,
+    address: Option<T::AccountId>,
+    account_id: [u8; 32],
+    counter: u8,
 }
 
 impl<T: Trait> Ifactory<T> {
     fn new(data_hash: T::Hash) -> Self {
-        Self { data_hash }
+        Self {
+            data_hash,
+            address: None,
+            account_id: [0; 32],
+            counter: 0,
+        }
     }
 
-    fn new_instance(&self) -> T::AccountId {
+    fn new_instance(&mut self) -> Result<T::AccountId, &'static str> {
         // Initialize new instance of data & scripts contract
-        T::AccountId::default()
+        if let Some(address) = &self.address {
+            Ok(address.to_owned())
+        } else {
+            // Account id calculation should be done more efficiently
+            if self.account_id[self.counter as usize] == std::u8::MAX {
+                self.counter += 1;
+            }
+            self.account_id[self.counter as usize] += 1;
+            let account_id = T::from_slice(self.account_id);
+            let contract_address =
+                T::ContractAddressFor::contract_address_for(&self.data_hash, &vec![], &account_id);
+            let origin = T::Origin::from(RawOrigin::from(Some(account_id)));
+            ensure!(
+                <contracts::Module<T>>::instantiate(
+                    origin,
+                    ENDOWMENT.into(),
+                    GAS.into(),
+                    self.data_hash,
+                    vec![]
+                )
+                .is_ok(),
+                INSTANTIATION_ERROR
+            );
+
+            Ok(contract_address)
+        }
     }
 }
 
 /// The pallet's configuration trait.
-pub trait Trait: system::Trait + Default + contracts::Trait{
+pub trait Trait: system::Trait + Default + contracts::Trait {
     /// The overarching event type.
-    type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
+    type Event: From<Event<Self>>
+        + Into<<Self as system::Trait>::Event>
+        + Into<<Self as contracts::Trait>::Event>;
 
+    type AccountId32: From<[u8; 32]> + Into<Self::AccountId> + From<Self::AccountId>;
+
+    type ContractAddressFor: contracts::ContractAddressFor<CodeHash<Self>, Self::AccountId>;
     /// Type of identifier for instances.
     type InstanceId: Parameter
         + Member
@@ -274,6 +320,8 @@ pub trait Trait: system::Trait + Default + contracts::Trait{
         + Copy
         + MaybeSerialize
         + PartialEq;
+
+    fn from_slice(slice: [u8; 32]) -> <Self as system::Trait>::AccountId;
 }
 
 // This pallet's storage items.
@@ -291,7 +339,6 @@ decl_storage! {
 decl_module! {
     pub struct Module<T: Trait> for enum Call where origin: T::Origin {
         // Initializing events
-        // this is needed only if you are using events in your pallet
         fn deposit_event() = default;
 
         fn set_element(
@@ -379,21 +426,22 @@ decl_module! {
             idata.continue_execution(element_index)?;
             Ok(())
         }
-    }
-}
-
-impl<T: Trait> Module<T> {
-    /// BPMN Interpreter logic
 
     /// Instantiation of Root-Process
-    pub fn create_root_instance(parent_case: T::InstanceId) -> DispatchResult {
-        let iflow = Self::ensure_iflow_instance_exists(parent_case)?;
+    pub fn create_root_instance(origin, parent_case: T::InstanceId) -> DispatchResult {
+
+        ensure_signed(origin)?;
+
+        let mut iflow = Self::ensure_iflow_instance_exists(parent_case)?;
+
+        let contract_id = iflow.get_factory_instance_mut().new_instance()?;
 
         //
         // == MUTATION SAFE ==
         //
 
-        iflow.get_factory_instance().new_instance();
+        <IflowById<T>>::insert(parent_case, iflow.clone());
+
 
         let mut idata = Idata::default();
 
@@ -401,18 +449,23 @@ impl<T: Trait> Module<T> {
 
         <IdataById<T>>::insert(parent_case, idata);
 
-        Self::deposit_event(RawEvent::NewCaseCreated(parent_case));
+        Self::deposit_event(RawEvent::NewCaseCreated(contract_id));
 
         Self::execution_required(parent_case, &iflow)?;
 
         Ok(())
     }
+    }
+}
+
+impl<T: Trait> Module<T> {
+    /// BPMN Interpreter logic
 
     /// Instantiation of a sub-process by its parent
     pub fn create_instance(
         element_index: u128,
         parent_case: T::InstanceId,
-    ) -> Result<T::InstanceId, &'static str> {
+    ) -> Result<(), &'static str> {
         ensure!(
             parent_case != T::InstanceId::default(),
             "Parent case should not be root"
@@ -424,26 +477,26 @@ impl<T: Trait> Module<T> {
         let parent_flow = Self::ensure_iflow_instance_exists(parent_flow_id)?;
 
         let child_flow_id = parent_flow.get_sub_process_instance(element_index);
-        let child_flow = Self::ensure_iflow_instance_exists(child_flow_id)?;
+        let mut child_flow = Self::ensure_iflow_instance_exists(child_flow_id)?;
+
+        let contract_id = child_flow.get_factory_instance_mut().new_instance()?;
 
         //
         // == MUTATION SAFE ==
         //
 
-        let ifactory = child_flow.get_factory_instance();
+        <IflowById<T>>::insert(child_flow_id, child_flow.clone());
 
-        ifactory.new_instance();
-
-        <IdataById<T>>::mutate(child_flow_id, |inner_data| {
-            inner_data.set_parent(Some(parent_case), child_flow_id, element_index)
-        });
         <IdataById<T>>::mutate(parent_case, |inner_data| {
+            inner_data.set_parent(Some(parent_case), child_flow_id, element_index);
             inner_data.add_child(element_index, child_flow_id)
         });
 
+        Self::deposit_event(RawEvent::NewCaseCreated(contract_id));
+
         Self::execution_required(child_flow_id, &child_flow)?;
 
-        Ok(T::InstanceId::default())
+        Ok(())
     }
 
     fn execution_required(
@@ -464,19 +517,19 @@ impl<T: Trait> Module<T> {
         Ok(())
     }
 
+    /// This function only receive THROW EVENTS (throw event verification made in function executeElement)
     fn throw_event(
         parent_case: T::InstanceId,
         idata: &Idata<T>,
         event_code: [u8; 32],
         event_info: u128,
     ) -> Result<(), &'static str> {
-        /// This function only receive THROW EVENTS (throw event verification made in function executeElement)
         let mut parent_state: [u128; 2] = [0; 2];
         parent_state[0] = idata.get_marking();
         parent_state[0] = idata.get_started_activities();
         match event_info {
             event_info if event_info & 4096 == 4096 => {
-                // Message (BIT 15), to publish a Message in the Ethereum Event Log
+                // Message (BIT 15), to publish a Message in the Event Log
                 Self::deposit_event(RawEvent::MessageSent(event_code.to_vec()));
             }
             event_info if event_info & 5632 == 5632 => {
@@ -806,8 +859,8 @@ impl<T: Trait> Module<T> {
                     // If (0- Activity, 7- Sequential Multi-Instance) ||
                     // Sub-process(0- Activity, 5- Sub-process) or Call-Activity(0- Activity, 4- Call-Activity)
                     // but NOT Event Sub-process(12- Event Subprocess)
-                    let instance = Self::create_instance(element_index, parent_case)?;
-                    <IdataById<T>>::mutate(instance, |idata| {
+                    Self::create_instance(element_index, parent_case)?;
+                    <IdataById<T>>::mutate(parent_case, |idata| {
                         let instance_count = child_flow.get_instance_count(element_index);
                         idata.set_instance_count(element_index, instance_count);
                     });
@@ -821,7 +874,7 @@ impl<T: Trait> Module<T> {
                     // (0- Activity, 3- Task, 12- Script) ||
                     // Exclusive(XOR) Split (1- Gateway, 3- Split(0), 4- Exclusive) ||
                     // Inclusive(OR) Split (1- Gateway, 3- Split(0), 6- Inclusive)
-                    parent_state[0] |= idata.execute_script(element_index);
+                    //parent_state[0] |= idata.execute_script(element_index);
                 }
                 type_info
                     if ((type_info & 9 == 9 && type_info & 27657 != 0) || type_info & 2 == 2) =>
@@ -905,9 +958,10 @@ decl_event!(
     where
         InstanceId = <T as Trait>::InstanceId,
         Hash = <T as system::Trait>::Hash,
+        AccountId = <T as system::Trait>::AccountId,
     {
         FactorySet(InstanceId, Hash),
-        NewCaseCreated(InstanceId),
+        NewCaseCreated(AccountId),
         MessageSent(Vec<u8>),
     }
 );
