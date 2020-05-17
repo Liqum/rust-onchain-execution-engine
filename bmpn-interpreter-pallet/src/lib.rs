@@ -100,10 +100,6 @@ impl<T: Trait> Iflow<T> {
         self.instance_count[&element_index]
     }
 
-    fn get_factory_instance(&self) -> &Ifactory<T> {
-        &self.factory
-    }
-
     fn get_factory_instance_mut(&mut self) -> &mut Ifactory<T> {
         &mut self.factory
     }
@@ -256,6 +252,7 @@ pub struct Ifactory<T: Trait> {
     /// Data & scripts hash
     data_hash: T::Hash,
     address: Option<T::AccountId>,
+    selector: Vec<u8>,
     account_id: [u8; 32],
     counter: u8,
 }
@@ -265,9 +262,14 @@ impl<T: Trait> Ifactory<T> {
         Self {
             data_hash,
             address: None,
+            selector: vec![],
             account_id: [0; 32],
             counter: 0,
         }
+    }
+
+    pub fn set_selector(&mut self, selector: Vec<u8>) {
+        self.selector = selector
     }
 
     fn new_instance(&mut self) -> Result<T::AccountId, &'static str> {
@@ -427,34 +429,52 @@ decl_module! {
             Ok(())
         }
 
-    /// Instantiation of Root-Process
-    pub fn create_root_instance(origin, parent_case: T::InstanceId) -> DispatchResult {
+        /// Instantiation of Root-Process
+        pub fn create_root_instance(origin, parent_case: T::InstanceId) -> DispatchResult {
 
-        ensure_signed(origin)?;
+            ensure_signed(origin)?;
 
-        let mut iflow = Self::ensure_iflow_instance_exists(parent_case)?;
+            let mut iflow = Self::ensure_iflow_instance_exists(parent_case)?;
 
-        let contract_id = iflow.get_factory_instance_mut().new_instance()?;
+            let contract_id = iflow.get_factory_instance_mut().new_instance()?;
 
-        //
-        // == MUTATION SAFE ==
-        //
+            //
+            // == MUTATION SAFE ==
+            //
 
-        <IflowById<T>>::insert(parent_case, iflow.clone());
+            <IflowById<T>>::insert(parent_case, iflow.clone());
 
 
-        let mut idata = Idata::default();
+            let mut idata = Idata::default();
 
-        idata.set_parent(None, parent_case, 0);
+            idata.set_parent(None, parent_case, 0);
 
-        <IdataById<T>>::insert(parent_case, idata);
+            <IdataById<T>>::insert(parent_case, idata);
 
-        Self::deposit_event(RawEvent::NewCaseCreated(contract_id));
+            Self::deposit_event(RawEvent::NewCaseCreated(contract_id));
 
-        Self::execution_required(parent_case, &iflow)?;
+            Self::execution_required(parent_case, &iflow)?;
 
-        Ok(())
-    }
+            Ok(())
+        }
+
+        /// Set execute_script selector for a given factory manually (for forward pallet -> contracts interaction)
+        pub fn set_selector(origin, parent_case: T::InstanceId, selector: Vec<u8>) -> DispatchResult {
+
+            ensure_signed(origin)?;
+
+            let mut iflow = Self::ensure_iflow_instance_exists(parent_case)?;
+
+            //
+            // == MUTATION SAFE ==
+            //
+
+            <IflowById<T>>::mutate(parent_case, |inner_flow| {
+                inner_flow.get_factory_instance_mut().set_selector(selector)
+            });
+
+            Ok(())
+        }
     }
 }
 
