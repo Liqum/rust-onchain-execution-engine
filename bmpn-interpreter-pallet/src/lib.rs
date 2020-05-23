@@ -391,15 +391,28 @@ decl_module! {
             // == MUTATION SAFE ==
             //
 
-            <IflowById<T>>::mutate(iflow_index, |inner_iflow|
-            inner_iflow.set_element(
-                element_index,
-                pre_condition,
-                post_condition,
-                type_info,
-                event_code,
-                _next_elem)
-            );
+            if <IflowById<T>>::exists(iflow_index) {
+                <IflowById<T>>::mutate(iflow_index, |inner_iflow|
+                    inner_iflow.set_element(
+                        element_index,
+                        pre_condition,
+                        post_condition,
+                        type_info,
+                        event_code,
+                        _next_elem)
+                );
+            } else {
+                let mut iflow = Iflow::default();
+                iflow.set_element(
+                    element_index,
+                    pre_condition,
+                    post_condition,
+                    type_info,
+                    event_code,
+                    _next_elem
+                );
+                <IflowById<T>>::insert(iflow_index, iflow);
+            }
             Ok(())
         }
 
@@ -545,7 +558,7 @@ impl<T: Trait> Module<T> {
             idata.set_marking(post_condition);
         });
         let next = child_flow.get_ady_elements(first_elem);
-        if next.len() != 0 {
+        if !next.is_empty() {
             Self::execute_elements(child_flow_id, next[0])?;
         }
         Ok(())
