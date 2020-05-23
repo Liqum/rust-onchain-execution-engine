@@ -294,7 +294,7 @@ impl<T: Trait> Ifactory<T> {
         &self.execute_script_selector
     }
 
-    fn new_instance(&mut self) -> Result<T::AccountId, &'static str> {
+    fn new_instance(&mut self, intance_id: T::InstanceId) -> Result<T::AccountId, &'static str> {
         // Initialize new instance of data & scripts contract
         if let Some(address) = &self.address {
             Ok(address.to_owned())
@@ -305,9 +305,13 @@ impl<T: Trait> Ifactory<T> {
             }
             self.account_id[self.counter as usize] += 1;
             let account_id = T::from_slice(self.account_id);
+
+            let encoded_instance_id = u128::encode(&intance_id.into());
+            let input_data = [self.get_instantiate_selector(), &encoded_instance_id[..]].concat();
+
             let contract_address = T::ContractAddressFor::contract_address_for(
                 &self.data_hash,
-                self.get_instantiate_selector(),
+                &input_data,
                 &account_id,
             );
             let origin = T::Origin::from(RawOrigin::from(Some(account_id)));
@@ -318,7 +322,7 @@ impl<T: Trait> Ifactory<T> {
                     ENDOWMENT.into(),
                     GAS.into(),
                     self.data_hash,
-                    vec![]
+                    input_data
                 )
                 .is_ok(),
                 INSTANTIATION_ERROR
@@ -346,6 +350,7 @@ pub trait Trait: system::Trait + Default + contracts::Trait {
         + Codec
         + Default
         + Copy
+        + Into<u128>
         + MaybeSerialize
         + PartialEq;
 
@@ -481,7 +486,7 @@ decl_module! {
 
             let mut iflow = Self::ensure_iflow_instance_exists(parent_case)?;
 
-            let contract_id = iflow.get_factory_instance_mut().new_instance()?;
+            let contract_id = iflow.get_factory_instance_mut().new_instance(parent_case)?;
 
             //
             // == MUTATION SAFE ==
@@ -526,7 +531,9 @@ impl<T: Trait> Module<T> {
         let child_flow_id = parent_flow.get_sub_process_instance(element_index);
         let mut child_flow = Self::ensure_iflow_instance_exists(child_flow_id)?;
 
-        let contract_id = child_flow.get_factory_instance_mut().new_instance()?;
+        let contract_id = child_flow
+            .get_factory_instance_mut()
+            .new_instance(child_flow_id)?;
 
         //
         // == MUTATION SAFE ==
