@@ -104,6 +104,10 @@ impl<T: Trait> Iflow<T> {
         &mut self.factory
     }
 
+    fn get_factory_instance(&self) -> &Ifactory<T> {
+        &self.factory
+    }
+
     fn set_factory_instance(&mut self, factory: Ifactory<T>) {
         self.factory = factory;
     }
@@ -252,24 +256,42 @@ pub struct Ifactory<T: Trait> {
     /// Data & scripts hash
     data_hash: T::Hash,
     address: Option<T::AccountId>,
-    selector: Vec<u8>,
+    instantiate_selector: Vec<u8>,
+    execute_script_selector: Vec<u8>,
     account_id: [u8; 32],
     counter: u8,
 }
 
 impl<T: Trait> Ifactory<T> {
-    fn new(data_hash: T::Hash) -> Self {
+    fn new(
+        data_hash: T::Hash,
+        instantiate_selector: Vec<u8>,
+        execute_script_selector: Vec<u8>,
+    ) -> Self {
         Self {
             data_hash,
             address: None,
-            selector: vec![],
+            instantiate_selector,
+            execute_script_selector,
             account_id: [0; 32],
             counter: 0,
         }
     }
 
-    pub fn set_selector(&mut self, selector: Vec<u8>) {
-        self.selector = selector
+    pub fn set_instantiate_selector(&mut self, instantiate_selector: Vec<u8>) {
+        self.instantiate_selector = instantiate_selector
+    }
+
+    pub fn get_address(&self) -> &Option<T::AccountId> {
+        &self.address
+    }
+
+    pub fn get_instantiate_selector(&self) -> &[u8] {
+        &self.instantiate_selector
+    }
+
+    pub fn get_execute_script_selector(&self) -> &[u8] {
+        &self.execute_script_selector
     }
 
     fn new_instance(&mut self) -> Result<T::AccountId, &'static str> {
@@ -283,9 +305,13 @@ impl<T: Trait> Ifactory<T> {
             }
             self.account_id[self.counter as usize] += 1;
             let account_id = T::from_slice(self.account_id);
-            let contract_address =
-                T::ContractAddressFor::contract_address_for(&self.data_hash, &vec![], &account_id);
+            let contract_address = T::ContractAddressFor::contract_address_for(
+                &self.data_hash,
+                self.get_instantiate_selector(),
+                &account_id,
+            );
             let origin = T::Origin::from(RawOrigin::from(Some(account_id)));
+
             ensure!(
                 <contracts::Module<T>>::instantiate(
                     origin,
@@ -404,9 +430,15 @@ decl_module! {
             Ok(())
         }
 
-        fn set_factory_instance(origin, instance_id: T::InstanceId, data_hash: T::Hash) -> DispatchResult {
+        fn set_factory_instance(
+            origin,
+            instance_id: T::InstanceId,
+            data_hash: T::Hash,
+            instantiate_selector: Vec<u8>,
+            execute_script_selector: Vec<u8>
+        ) -> DispatchResult {
             ensure_signed(origin)?;
-            let factory = Ifactory::new(data_hash);
+            let factory = Ifactory::new(data_hash, instantiate_selector, execute_script_selector);
 
             //
             // == MUTATION SAFE ==
@@ -454,24 +486,6 @@ decl_module! {
             Self::deposit_event(RawEvent::NewCaseCreated(contract_id));
 
             Self::execution_required(parent_case, &iflow)?;
-
-            Ok(())
-        }
-
-        /// Set execute_script selector for a given factory manually (for forward pallet -> contracts interaction)
-        pub fn set_selector(origin, parent_case: T::InstanceId, selector: Vec<u8>) -> DispatchResult {
-
-            ensure_signed(origin)?;
-
-            let mut iflow = Self::ensure_iflow_instance_exists(parent_case)?;
-
-            //
-            // == MUTATION SAFE ==
-            //
-
-            <IflowById<T>>::mutate(parent_case, |inner_flow| {
-                inner_flow.get_factory_instance_mut().set_selector(selector)
-            });
 
             Ok(())
         }
@@ -894,7 +908,26 @@ impl<T: Trait> Module<T> {
                     // (0- Activity, 3- Task, 12- Script) ||
                     // Exclusive(XOR) Split (1- Gateway, 3- Split(0), 4- Exclusive) ||
                     // Inclusive(OR) Split (1- Gateway, 3- Split(0), 6- Inclusive)
-                    //parent_state[0] |= idata.execute_script(element_index);
+                    let factory = child_flow.get_factory_instance();
+
+                    let origin = T::Origin::from(RawOrigin::Root);
+                    let account_id = ensure_signed(origin)?;
+
+                    if let Some(address) = factory.get_address() {
+                        match <contracts::Module<T>>::bare_call(
+                            account_id,
+                            address.to_owned(),
+                            ENDOWMENT.into(),
+                            GAS.into(),
+                            factory.get_execute_script_selector().to_owned(),
+                        ) {
+                            Ok(result) => {
+                                parent_state[0] |= u128::decode(&mut &result.data[..])
+                                    .map_err(|_| DECODING_ERROR)?;
+                            }
+                            Err(e) => return Err(e.reason.into()),
+                        }
+                    }
                 }
                 type_info
                     if ((type_info & 9 == 9 && type_info & 27657 != 0) || type_info & 2 == 2) =>
