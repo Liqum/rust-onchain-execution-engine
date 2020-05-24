@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    'node',
+    'bpmn-interpreter-pallet',
+    'runtime',
+]
+[profile.release]
+panic = 'unwind'
