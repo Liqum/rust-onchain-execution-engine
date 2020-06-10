@@ -289,8 +289,6 @@ pub struct Ifactory<T: Trait> {
     address: Option<T::AccountId>,
     instantiate_selector: Vec<u8>,
     execute_script_selector: Vec<u8>,
-    account_id: [u8; 32],
-    counter: u8,
 }
 
 impl <T: Trait> Default for Ifactory<T> {
@@ -300,8 +298,6 @@ impl <T: Trait> Default for Ifactory<T> {
             address: None,
             instantiate_selector: vec![],
             execute_script_selector: vec![],
-            account_id: [0; 32],
-            counter: 0,
         }
     }
 }
@@ -317,8 +313,6 @@ impl<T: Trait> Ifactory<T> {
             address: None,
             instantiate_selector,
             execute_script_selector,
-            account_id: [0; 32],
-            counter: 0,
         }
     }
 
@@ -343,12 +337,7 @@ impl<T: Trait> Ifactory<T> {
         if let Some(address) = &self.address {
             Ok(address.clone())
         } else {
-            // Account id calculation should be done more efficiently
-            if self.account_id[self.counter as usize] == core::u8::MAX {
-                self.counter += 1;
-            }
-            self.account_id[self.counter as usize] += 1;
-            let account_id = T::from_slice(self.account_id);
+            // Implement random account id calculation (runtime)?
 
             let encoded_instance_id = u128::encode(&intance_id.into());
             let input_data = [self.get_instantiate_selector(), &encoded_instance_id[..]].concat();
@@ -356,9 +345,9 @@ impl<T: Trait> Ifactory<T> {
             let contract_address = T::ContractAddressFor::contract_address_for(
                 &self.data_hash,
                 &input_data,
-                &account_id,
+                &T::AccountId::default(),
             );
-            let origin = T::Origin::from(RawOrigin::from(Some(account_id)));
+            let origin = T::Origin::from(RawOrigin::Root);
 
             ensure!(
                 <pallet_contracts::Module<T>>::instantiate(
@@ -384,8 +373,6 @@ pub trait Trait: frame_system::Trait + pallet_contracts::Trait {
         + Into<<Self as frame_system::Trait>::Event>
         + Into<<Self as pallet_contracts::Trait>::Event>;
 
-    type AccountId32: From<[u8; 32]> + Into<Self::AccountId> + From<Self::AccountId>;
-
     type ContractAddressFor: pallet_contracts::ContractAddressFor<CodeHash<Self>, Self::AccountId>;
     /// Type of identifier for instances.
     type InstanceId: Parameter
@@ -397,8 +384,6 @@ pub trait Trait: frame_system::Trait + pallet_contracts::Trait {
         + Into<u128>
         + MaybeSerialize
         + PartialEq;
-
-    fn from_slice(slice: [u8; 32]) -> <Self as frame_system::Trait>::AccountId;
 }
 
 

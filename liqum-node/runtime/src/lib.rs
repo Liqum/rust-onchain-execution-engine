@@ -30,6 +30,9 @@ use sp_version::NativeVersion;
 pub use sp_runtime::BuildStorage;
 pub use timestamp::Call as TimestampCall;
 pub use balances::Call as BalancesCall;
+pub use contracts::Call as ContractsCall;
+
+pub use contracts::TrieIdGenerator;
 pub use sp_runtime::{Permill, Perbill};
 pub use frame_support::{
 	construct_runtime, parameter_types, StorageValue,
@@ -39,8 +42,10 @@ pub use frame_support::{
 		constants::{BlockExecutionWeight, ExtrinsicBaseWeight, RocksDbWeight, WEIGHT_PER_SECOND},
 	},
 };
+pub use contracts::Schedule as ContractsSchedule;
 
-/// Importing a template pallet
+
+/// Importing a bpmn_interpreter_pallet
 pub use bpmn_interpreter_pallet;
 
 /// An index to a block.
@@ -247,10 +252,36 @@ impl sudo::Trait for Runtime {
 
 impl bpmn_interpreter_pallet::Trait for Runtime {
 	type Event = Event;
+	type InstanceId = u128;
 }
 
-impl pallet_contracts::Trait for Runtime {
-	
+pub const MILLICENTS: Balance = 1_000_000_000;
+pub const CENTS: Balance = 1_000 * MILLICENTS;
+pub const DOLLARS: Balance = 100 * CENTS;
+
+parameter_types! {
+    pub const TombstoneDeposit: Balance = 1 * DOLLARS;
+    pub const RentByteFee: Balance = 1 * DOLLARS;
+    pub const RentDepositOffset: Balance = 1000 * DOLLARS;
+	pub const SurchargeReward: Balance = 150 * DOLLARS;
+}
+
+impl contracts::Trait for Runtime {
+	type Time = Timestamp;
+    type Randomness = RandomnessCollectiveFlip;
+    type Call = Call;
+    type Event = Event;
+    type DetermineContractAddress = contracts::SimpleAddressDeterminer<Runtime>;
+    type TrieIdGenerator = contracts::TrieIdFromParentCounter<Runtime>;
+    type RentPayment = ();
+    type SignedClaimHandicap = contracts::DefaultSignedClaimHandicap;
+    type TombstoneDeposit = TombstoneDeposit;
+    type StorageSizeOffset = contracts::DefaultStorageSizeOffset;
+    type RentByteFee = RentByteFee;
+    type RentDepositOffset = RentDepositOffset;
+    type SurchargeReward = SurchargeReward;
+    type MaxDepth = contracts::DefaultMaxDepth;
+    type MaxValueSize = contracts::DefaultMaxValueSize;
 }
 
 construct_runtime!(
@@ -265,6 +296,9 @@ construct_runtime!(
 		Aura: aura::{Module, Config<T>, Inherent(Timestamp)},
 		Grandpa: grandpa::{Module, Call, Storage, Config, Event},
 		Balances: balances::{Module, Call, Storage, Config<T>, Event<T>},
+
+		Contracts: contracts::{Module, Call, Config, Storage, Event<T>},
+		
 		TransactionPayment: transaction_payment::{Module, Storage},
 		Sudo: sudo::{Module, Call, Config<T>, Storage, Event<T>},
 		// Used for the module template in `./template.rs`

@@ -161,10 +161,18 @@ package = 'substrate-wasm-builder-runner'
 tag = 'v2.0.0-alpha.8'
 version = '1.0.5'
 
-[dependencies.pallet-contracts]
+[dependencies.contracts]
 default_features = false
 git = 'https://github.com/paritytech/substrate.git'
 tag = 'v2.0.0-alpha.8'
+package = 'pallet-contracts'
+version = '2.0.0-alpha.8'
+
+[dependencies.contracts-primitives]
+default_features = false
+git = 'https://github.com/paritytech/substrate.git'
+tag = 'v2.0.0-alpha.8'
+package = 'pallet-contracts-primitives'
 version = '2.0.0-alpha.8'
 
 [package]
@@ -207,5 +215,6 @@ std = [
     'timestamp/std',
     'transaction-payment/std',
     'bpmn-interpreter-pallet/std',
-    'pallet-contracts/std'
+    'contracts/std',
+    'contracts-primitives/std',
 ]
