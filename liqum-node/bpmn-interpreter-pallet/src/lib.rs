@@ -9,7 +9,7 @@ use sp_std::{collections::btree_map::BTreeMap, prelude::*};
 use frame_system::{ensure_signed, RawOrigin, self as system};
 
 mod errors;
-use pallet_contracts::{CodeHash, ContractAddressFor};
+use contracts::{CodeHash, ContractAddressFor};
 use errors::*;
 
 const ENDOWMENT: u32 = 1000;
@@ -350,7 +350,7 @@ impl<T: Trait> Ifactory<T> {
             let origin = T::Origin::from(RawOrigin::Root);
 
             ensure!(
-                <pallet_contracts::Module<T>>::instantiate(
+                <contracts::Module<T>>::instantiate(
                     origin,
                     ENDOWMENT.into(),
                     GAS.into(),
@@ -367,13 +367,12 @@ impl<T: Trait> Ifactory<T> {
 }
 
 /// The pallet's configuration trait.
-pub trait Trait: frame_system::Trait + pallet_contracts::Trait {
+pub trait Trait: frame_system::Trait + contracts::Trait {
     /// The overarching event type.
-    type Event: From<Event<Self>>
-        + Into<<Self as frame_system::Trait>::Event>
-        + Into<<Self as pallet_contracts::Trait>::Event>;
+	type Event: From<Event<Self>> + Into<<Self as frame_system::Trait>::Event>;
 
-    type ContractAddressFor: pallet_contracts::ContractAddressFor<CodeHash<Self>, Self::AccountId>;
+    type ContractAddressFor: contracts::ContractAddressFor<CodeHash<Self>, Self::AccountId>;
+    
     /// Type of identifier for instances.
     type InstanceId: Parameter
         + Member
@@ -970,7 +969,7 @@ impl<T: Trait> Module<T> {
                     let account_id = ensure_signed(origin)?;
 
                     if let Some(address) = factory.get_address() {
-                        match <pallet_contracts::Module<T>>::bare_call(
+                        match <contracts::Module<T>>::bare_call(
                             account_id,
                             address.clone(),
                             ENDOWMENT.into(),
