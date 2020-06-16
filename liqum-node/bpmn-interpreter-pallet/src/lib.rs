@@ -4,9 +4,9 @@ use codec::{Codec, Decode, Encode};
 use frame_support::{
     decl_event, decl_module, decl_storage, dispatch::DispatchResult, ensure, Parameter,
 };
-use sp_runtime::traits::{MaybeSerialize, Member, CheckedAdd};
+use frame_system::{self as system, ensure_signed, RawOrigin};
+use sp_runtime::traits::{CheckedAdd, MaybeSerialize, Member};
 use sp_std::{collections::btree_map::BTreeMap, prelude::*};
-use frame_system::{ensure_signed, RawOrigin, self as system};
 
 mod errors;
 use contracts::{CodeHash, ContractAddressFor};
@@ -36,7 +36,7 @@ pub struct Iflow<T: Trait> {
     factory: Ifactory<T>,
 }
 
-impl <T: Trait> Default for Iflow<T> {
+impl<T: Trait> Default for Iflow<T> {
     fn default() -> Self {
         Self {
             start_evt: 0,
@@ -48,7 +48,7 @@ impl <T: Trait> Default for Iflow<T> {
             event_code: BTreeMap::new(),
             parent_references: BTreeMap::new(),
             instance_count: BTreeMap::new(),
-            factory: Ifactory::<T>::default()
+            factory: Ifactory::<T>::default(),
         }
     }
 }
@@ -181,7 +181,7 @@ pub struct Idata<T: Trait> {
     instance_count: BTreeMap<u128, u128>,
 }
 
-impl <T: Trait> Default for Idata<T> {
+impl<T: Trait> Default for Idata<T> {
     fn default() -> Self {
         Self {
             tokens_on_edges: 0,
@@ -234,7 +234,7 @@ impl<T: Trait> Idata<T> {
 
     fn decrement_instance_count(&mut self, element_index: u128) {
         if let Some(instance_count) = self.instance_count.get_mut(&element_index) {
-            let _ = instance_count.checked_sub(1);
+            *instance_count -= 1;
         }
     }
 
@@ -291,7 +291,7 @@ pub struct Ifactory<T: Trait> {
     execute_script_selector: Vec<u8>,
 }
 
-impl <T: Trait> Default for Ifactory<T> {
+impl<T: Trait> Default for Ifactory<T> {
     fn default() -> Self {
         Self {
             data_hash: T::Hash::default(),
@@ -361,6 +361,8 @@ impl<T: Trait> Ifactory<T> {
                 INSTANTIATION_ERROR
             );
 
+            self.address = Some(contract_address.clone());
+
             Ok(contract_address)
         }
     }
@@ -369,10 +371,10 @@ impl<T: Trait> Ifactory<T> {
 /// The pallet's configuration trait.
 pub trait Trait: frame_system::Trait + contracts::Trait {
     /// The overarching event type.
-	type Event: From<Event<Self>> + Into<<Self as frame_system::Trait>::Event>;
+    type Event: From<Event<Self>> + Into<<Self as frame_system::Trait>::Event>;
 
     type ContractAddressFor: contracts::ContractAddressFor<CodeHash<Self>, Self::AccountId>;
-    
+
     /// Type of identifier for instances.
     type InstanceId: Parameter
         + Member
@@ -384,7 +386,6 @@ pub trait Trait: frame_system::Trait + contracts::Trait {
         + MaybeSerialize
         + PartialEq;
 }
-
 
 // This pallet's storage items.
 decl_storage! {
@@ -400,7 +401,7 @@ decl_storage! {
 // The pallet's dispatchable functions.
 decl_module! {
     pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-        
+
         // Initializing events
         fn deposit_event() = default;
 
