@@ -333,11 +333,11 @@ impl<T: Trait> Ifactory<T> {
     }
 
     fn new_instance(&mut self, intance_id: T::InstanceId) -> Result<T::AccountId, &'static str> {
+        
         // Initialize new instance of data & scripts contract
         if let Some(address) = &self.address {
             Ok(address.clone())
         } else {
-            // Implement random account id calculation (runtime)?
 
             let encoded_instance_id = u128::encode(&intance_id.into());
             let input_data = [self.get_instantiate_selector(), &encoded_instance_id[..]].concat();

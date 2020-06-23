@@ -28,6 +28,9 @@ use sp_version::RuntimeVersion;
 
 // A few exports that help ease life for downstream crates.
 pub use balances::Call as BalancesCall;
+
+pub use bpmn_interpreter::Call as BpmnInterpreterCall;
+
 pub use frame_support::{
     construct_runtime, parameter_types,
     traits::{KeyOwnerProofSystem, Randomness},
@@ -287,9 +290,11 @@ impl contracts::Trait for Runtime {
     type MaxValueSize = contracts::DefaultMaxValueSize;
 }
 
+pub type InstanceId = u64;
+
 impl bpmn_interpreter::Trait for Runtime {
     type Event = Event;
-    type InstanceId = u128;
+    type InstanceId = InstanceId;
     type ContractAddressFor = contracts::SimpleAddressDeterminer<Runtime>;
 }
 
@@ -304,14 +309,16 @@ construct_runtime!(
         Timestamp: timestamp::{Module, Call, Storage, Inherent},
         Aura: aura::{Module, Config<T>, Inherent(Timestamp)},
         Grandpa: grandpa::{Module, Call, Storage, Config, Event},
+        // Used for the module bpmn_interpreter in `./bpmn_interpreter.rs`
+        BpmnInterpreter: bpmn_interpreter::{Module, Call, Storage, Event<T>},
+
         Balances: balances::{Module, Call, Storage, Config<T>, Event<T>},
         TransactionPayment: transaction_payment::{Module, Storage},
         Sudo: sudo::{Module, Call, Config<T>, Storage, Event<T>},
 
         Contracts: contracts::{Module, Call, Config, Storage, Event<T>},
 
-        // Used for the module bpmn_interpreter in `./bpmn_interpreter.rs`
-        BpmnInterpreterModule: bpmn_interpreter::{Module, Call, Storage, Event<T>},
+       
     }
 );
 

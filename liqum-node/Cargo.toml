@@ -6,4 +6,5 @@ members = [
     'node',
     'bpmn-interpreter-pallet',
     'runtime',
+    'ink-types-node-runtime',
 ]
